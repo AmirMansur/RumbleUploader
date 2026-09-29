@@ -152,22 +152,63 @@ jobs:
             return null;
           };
           R.hasTitle=function(){return R.titleEl()?'1':'0';};
+          R.categoryDone=false;
           R.category=function(){
+            var WANT=/entertainment/i;
+            // 1) native <select> for category
             var s=document.querySelectorAll('select');
             for(var i=0;i<s.length;i++){
               var e=s[i];
               var k=(e.name+' '+e.id+' '+(e.getAttribute('aria-label')||'')).toLowerCase();
               if(k.indexOf('categ')>=0){
-                if(!e.value){
-                  for(var j=0;j<e.options.length;j++){
-                    if(e.options[j].value){e.selectedIndex=j;e.dispatchEvent(new Event('change',{bubbles:true}));break;}
-                  }
+                var opts=e.options;
+                if(!WANT.test((opts[e.selectedIndex]||{}).text||'')){
+                  var pick=-1;
+                  for(var j=0;j<opts.length;j++){ if(WANT.test(opts[j].text)){pick=j;break;} }
+                  if(pick<0){ for(var j2=0;j2<opts.length;j2++){ if(opts[j2].value){pick=j2;break;} } }
+                  if(pick>=0){ e.selectedIndex=pick; e.dispatchEvent(new Event('change',{bubbles:true})); }
                 }
-                return e.value?'ok':'none';
+                return WANT.test((opts[e.selectedIndex]||{}).text||'')?'ok':'none';
               }
             }
+            // 2) already-picked pill/tag showing "Entertainment" text somewhere in a category-ish area
+            var already=document.querySelectorAll('[class*="categ" i],[data-*="categ" i]');
+            for(var a=0;a<already.length;a++){
+              if(R.vis(already[a])&&WANT.test(R.txt(already[a]))) return 'ok';
+            }
+            // 3) a clickable option already on screen reading "Entertainment"
+            var opts2=document.querySelectorAll('label,li,button,div,span,a,[role=option],[role=radio],[role=button]');
+            var target=null;
+            for(var b=0;b<opts2.length;b++){
+              var el=opts2[b];
+              if(!R.vis(el)||R.inNav(el))continue;
+              var t=R.txt(el);
+              if(t.length<40&&WANT.test(t)&&/^entertainment$/i.test(t)){ target=el; break; }
+            }
+            if(target){
+              var already2=target.getAttribute('aria-checked')==='true'||target.getAttribute('aria-selected')==='true'||target.classList.contains('selected')||target.classList.contains('active')||target.classList.contains('checked');
+              var cb=target.querySelector&&target.querySelector('input[type=checkbox],input[type=radio]');
+              if(cb&&cb.checked)already2=true;
+              if(!already2){ target.click(); }
+              var now=target.getAttribute('aria-checked')==='true'||target.getAttribute('aria-selected')==='true'||target.classList.contains('selected')||target.classList.contains('active')||target.classList.contains('checked');
+              if(cb&&cb.checked)now=true;
+              if(now||already2){ R.categoryDone=true; return 'ok'; }
+              return 'clicked';
+            }
+            if(R.categoryDone) return 'ok';
+            // 4) need to open a category picker/dropdown first
+            var trig=document.querySelectorAll('label,button,div,span,a,[role=button],input');
+            var openEl=null;
+            for(var c=0;c<trig.length;c++){
+              var el2=trig[c];
+              if(!R.vis(el2)||R.inNav(el2))continue;
+              var tt=(R.txt(el2)+' '+(el2.getAttribute('placeholder')||'')+' '+(el2.getAttribute('aria-label')||'')).toLowerCase();
+              if(tt.length<60&&/(select|choose|add).{0,15}categor|^categor(y|ies)$|primary categor/.test(tt)){ openEl=el2; break; }
+            }
+            if(openEl){ if(!R.categoryOpened){ R.categoryOpened=true; openEl.click(); } return 'opening'; }
             return 'none';
           };
+          R.categoryOpened=false;
           R.agree=function(){
             var n=0;
             var c=document.querySelectorAll('input[type=checkbox]');
@@ -235,7 +276,7 @@ jobs:
             }
             return found;
           };
-          R.tickForm=function(t){
+                    R.tickForm=function(t){
             var o={title:false};
             var e=R.titleEl();
             if(e){ if(e.value!==t)R.setVal(e,t); o.title=(e.value===t); }
@@ -260,7 +301,7 @@ jobs:
             var b=R.submitBtn();
             if(b&&!b.disabled){b.click();return '1';}
             return '0';
-                      };
+          };
           R.confirm=function(){
             return JSON.stringify({gone:!R.titleEl(),ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||'')});
           };
@@ -333,6 +374,7 @@ jobs:
               private var lastPctLog = 0L
               private var picks = 0
               private var stable = 0
+              private var catLogged = false
               private var pageLoaded = false
               private var chooserServed = false
               private var pendingUri: Uri? = null
@@ -512,7 +554,7 @@ jobs:
                   queue = list.sortedWith(natCmp)
                   failed.clear()
                   log("Folder loaded: ${queue.size} video(s).")
-              }
+                                }
 
               // ---------- progress ----------
               private fun doneSet(): Set<String> = prefs.getStringSet("done", emptySet()) ?: emptySet()
@@ -522,7 +564,7 @@ jobs:
               private fun markDone(note: String) {
                   val n = HashSet<String>(doneSet())
                   cur?.let { n.add(it.id) }
-                                    prefs.edit().putStringSet("done", n).apply()
+                  prefs.edit().putStringSet("done", n).apply()
                   log("  ✔ done$note")
                   state = S.IDLE
                   updateStatus()
@@ -648,6 +690,7 @@ jobs:
                           picks = 0
                           stable = 0
                           lastTap = 0
+                          catLogged = false
                           wv.loadUrl(UPLOAD_URL)
                           state = S.LOADING
                           since = now
@@ -714,6 +757,7 @@ jobs:
                               } else {
                                   lastTitleSeen = t
                                   val unl = o.optString("unl")
+                                  val cat = o.optString("cat")
                                   val err = o.optString("err")
                                   val up = o.optBoolean("up")
                                   val ready = o.optString("submit") == "ready"
@@ -724,10 +768,13 @@ jobs:
                                           lastPctLog = t
                                           log("  uploading " + o.optString("pct"))
                                       }
+                                      if (cat == "ok" && !catLogged) { catLogged = true; log("  category: Entertainment") }
                                       if (!up && ready) stable++ else stable = 0
                                       if (stable >= 4 && t - since > 15000) {
                                           if (unl != "ok") {
                                               stopRun("Ready to submit, but I could not confirm 'Unlisted' is selected, so I did NOT submit. Tap Debug and send me the text.")
+                                          } else if (cat != "ok") {
+                                              stopRun("Ready to submit, but I could not confirm the 'Entertainment' category is selected, so I did NOT submit. Tap Debug and send me the text.")
                                           } else {
                                               state = S.SUBMITTING
                                           }
