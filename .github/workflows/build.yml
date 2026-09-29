@@ -260,7 +260,7 @@ jobs:
             var b=R.submitBtn();
             if(b&&!b.disabled){b.click();return '1';}
             return '0';
-          };
+                      };
           R.confirm=function(){
             return JSON.stringify({gone:!R.titleEl(),ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||'')});
           };
@@ -442,4 +442,346 @@ jobs:
                   updateStatus()
               }
 
-   
+              override fun onDestroy() {
+                  h.removeCallbacksAndMessages(null)
+                  releaseWake()
+                  wv.destroy()
+                  super.onDestroy()
+              }
+
+              // ---------- folder ----------
+              private fun pickFolder() {
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                  i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                  startActivityForResult(i, REQ_TREE)
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQ_TREE && resultCode == RESULT_OK) {
+                      val u = data?.data ?: return
+                      try {
+                          contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      } catch (e: Exception) { }
+                      prefs.edit().putString("tree", u.toString()).apply()
+                      try { loadVideos(u) } catch (e: Exception) { log("Could not read folder: " + e.message) }
+                      updateStatus()
+                  }
+              }
+
+              private fun natKey(s: String): List<String> =
+                  Regex("\\d+|\\D+").findAll(s.lowercase()).map { it.value }.toList()
+
+              private val natCmp = Comparator<Vid> { a, b ->
+                  val x = natKey(a.name)
+                  val y = natKey(b.name)
+                  var res = 0
+                  var i = 0
+                  while (res == 0 && i < minOf(x.size, y.size)) {
+                      val p = x[i]
+                      val q = y[i]
+                      res = if (p[0].isDigit() && q[0].isDigit()) p.toBigInteger().compareTo(q.toBigInteger()) else p.compareTo(q)
+                      i++
+                  }
+                  if (res != 0) res else x.size - y.size
+              }
+
+              private fun loadVideos(tree: Uri) {
+                  val treeId = DocumentsContract.getTreeDocumentId(tree)
+                  val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeId)
+                  val list = ArrayList<Vid>()
+                  val ext = Regex(".*\\.(mp4|mov|mkv|avi|webm|m4v|3gp|flv|wmv|mpg|mpeg)")
+                  val cur = contentResolver.query(
+                      children,
+                      arrayOf(
+                          DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                          DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                          DocumentsContract.Document.COLUMN_MIME_TYPE
+                      ), null, null, null
+                  )
+                  cur?.use {
+                      while (it.moveToNext()) {
+                          val id = it.getString(0)
+                          val name = it.getString(1) ?: continue
+                          val mime = it.getString(2) ?: ""
+                          if (mime.startsWith("video/") || name.lowercase().matches(ext)) {
+                              list.add(Vid(id, name, DocumentsContract.buildDocumentUriUsingTree(tree, id)))
+                          }
+                      }
+                  }
+                  queue = list.sortedWith(natCmp)
+                  failed.clear()
+                  log("Folder loaded: ${queue.size} video(s).")
+              }
+
+              // ---------- progress ----------
+              private fun doneSet(): Set<String> = prefs.getStringSet("done", emptySet()) ?: emptySet()
+              private fun isDone(id: String) = doneSet().contains(id)
+              private fun doneCount() = queue.count { isDone(it.id) }
+
+              private fun markDone(note: String) {
+                  val n = HashSet<String>(doneSet())
+                  cur?.let { n.add(it.id) }
+                                    prefs.edit().putStringSet("done", n).apply()
+                  log("  ✔ done$note")
+                  state = S.IDLE
+                  updateStatus()
+              }
+
+              private fun resetProgress() {
+                  prefs.edit().remove("done").apply()
+                  failed.clear()
+                  log("Progress reset: all videos will be uploaded again.")
+                  updateStatus()
+              }
+
+              private fun updateStatus() {
+                  statusView.text = "Videos: ${queue.size}  •  done: ${doneCount()}  •  " + (if (running) "RUNNING" else "stopped")
+              }
+
+              private fun log(m: String) {
+                  logView.append(m + "\n")
+                  if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
+                  logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+              }
+
+              // ---------- run control ----------
+              private fun startRun() {
+                  if (running) return
+                  if (queue.isEmpty()) { log("Select a folder with videos first."); return }
+                  running = true
+                  busy = false
+                  state = S.IDLE
+                  try {
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:run")
+                      wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+                  updateStatus()
+                  h.post(ticker)
+              }
+
+              private fun stopRun(msg: String) {
+                  running = false
+                  busy = false
+                  releaseWake()
+                  log(msg)
+                  updateStatus()
+              }
+
+              private fun releaseWake() {
+                  try { if (wake?.isHeld == true) wake?.release() } catch (e: Exception) { }
+              }
+
+              private fun skipCurrent() {
+                  cur?.let { failed.add(it.id) }
+                  pendingUri = null
+                  busy = false
+                  state = S.IDLE
+                  log("Skipped current video.")
+              }
+
+              private fun fail(msg: String) {
+                  log("  ✖ $msg — skipped")
+                  cur?.let { failed.add(it.id) }
+                  state = S.IDLE
+                  updateStatus()
+              }
+
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      if (!running) return
+                      try { tick() } catch (e: Exception) { busy = false; log("Error: " + e) }
+                      h.postDelayed(this, 1500)
+                  }
+              }
+
+              // ---------- JS bridge ----------
+              private fun unwrap(r: String?): String? {
+                  if (r == null || r == "null") return null
+                  return try { (JSONTokener(r).nextValue() as? String) ?: r } catch (e: Exception) { r }
+              }
+
+              private fun runJs(code: String, cb: (String?) -> Unit) {
+                  wv.evaluateJavascript(HELPER + "\n" + code) { r -> cb(unwrap(r)) }
+              }
+
+              private fun tap(x: Float, y: Float) {
+                  val t = SystemClock.uptimeMillis()
+                  val d = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0)
+                  wv.dispatchTouchEvent(d)
+                  d.recycle()
+                  h.postDelayed({
+                      val t2 = SystemClock.uptimeMillis()
+                      val u = MotionEvent.obtain(t, t2, MotionEvent.ACTION_UP, x, y, 0)
+                      wv.dispatchTouchEvent(u)
+                      u.recycle()
+                  }, 90)
+              }
+
+              private fun debugDump() {
+                  runJs("R.dump()") { r ->
+                      val txt = try { JSONObject(r ?: "{}").toString(2) } catch (e: Exception) { r ?: "(no data)" }
+                      log("--- DEBUG ---\n$txt\n--- copied to clipboard ---")
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("rumble-debug", txt))
+                  }
+              }
+
+              // ---------- main state machine ----------
+              private fun tick() {
+                  if (busy) return
+                  val now = SystemClock.elapsedRealtime()
+                  val v = cur
+                  when (state) {
+                      S.IDLE -> {
+                          val next = queue.firstOrNull { !isDone(it.id) && !failed.contains(it.id) }
+                          if (next == null) {
+                              stopRun("Finished. Done: ${doneCount()}/${queue.size}, skipped: ${failed.size}")
+                              return
+                          }
+                          cur = next
+                          log("▶ ${next.name}")
+                          pageLoaded = false
+                          chooserServed = false
+                          pendingUri = null
+                          picks = 0
+                          stable = 0
+                          lastTap = 0
+                          wv.loadUrl(UPLOAD_URL)
+                          state = S.LOADING
+                          since = now
+                      }
+                      S.LOADING -> {
+                          if (pageLoaded) {
+                              val u = wv.url ?: ""
+                              if (u.contains("login", true) || u.contains("signin", true)) {
+                                  stopRun("Please log in to Rumble in the browser above, then press Start again.")
+                                  return
+                              }
+                              pendingUri = v!!.uri
+                              state = S.PICKING
+                              since = now
+                          } else if (now - since > 60000) {
+                              fail("Page did not load")
+                          }
+                      }
+                      S.PICKING -> {
+                          busy = true
+                          runJs("R.hasTitle()") { r ->
+                              busy = false
+                              val t = SystemClock.elapsedRealtime()
+                              if (chooserServed) {
+                                  if (r == "1") {
+                                      state = S.UPLOADING
+                                      since = t
+                                      lastTitleSeen = t
+                                      stable = 0
+                                      log("  uploading…")
+                                  } else if (t - since > 120000) {
+                                      fail("Rumble did not show the details form")
+                                  }
+                              } else if (t - lastTap > 4000) {
+                                  lastTap = t
+                                  picks++
+                                  if (picks > 10) {
+                                      stopRun("Could not find the 'select video' button. Tap Debug and send me the text.")
+                                  } else {
+                                      busy = true
+                                      runJs("R.pickRect()") { r2 ->
+                                          busy = false
+                                          if (r2 != null && r2 != "0") {
+                                              val o = JSONObject(r2)
+                                              val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                              tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                              log("  tapped: " + o.optString("txt"))
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      S.UPLOADING -> {
+                          busy = true
+                          val title = v!!.name.substringBeforeLast('.')
+                          runJs("R.tickForm(" + JSONObject.quote(title) + ")") { r ->
+                              busy = false
+                              val t = SystemClock.elapsedRealtime()
+                              val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
+                              if (!o.optBoolean("title")) {
+                                  stable = 0
+                                  if (t - lastTitleSeen > 120000) fail("Details form disappeared")
+                              } else {
+                                  lastTitleSeen = t
+                                  val unl = o.optString("unl")
+                                  val err = o.optString("err")
+                                  val up = o.optBoolean("up")
+                                  val ready = o.optString("submit") == "ready"
+                                  if (err.isNotEmpty()) {
+                                      fail("Rumble says: $err")
+                                  } else {
+                                      if (up && t - lastPctLog > 20000) {
+                                          lastPctLog = t
+                                          log("  uploading " + o.optString("pct"))
+                                      }
+                                      if (!up && ready) stable++ else stable = 0
+                                      if (stable >= 4 && t - since > 15000) {
+                                          if (unl != "ok") {
+                                              stopRun("Ready to submit, but I could not confirm 'Unlisted' is selected, so I did NOT submit. Tap Debug and send me the text.")
+                                          } else {
+                                              state = S.SUBMITTING
+                                          }
+                                      } else if (t - since > 6 * 3600 * 1000L) {
+                                          fail("Upload took too long")
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      S.SUBMITTING -> {
+                          busy = true
+                          runJs("R.clickSubmit()") { r ->
+                              busy = false
+                              if (r == "1") {
+                                  urlAtSubmit = wv.url
+                                  state = S.CONFIRMING
+                                  since = SystemClock.elapsedRealtime()
+                                  log("  submitted")
+                              } else {
+                                  stable = 0
+                                  state = S.UPLOADING
+                              }
+                          }
+                      }
+                      S.CONFIRMING -> {
+                          busy = true
+                          runJs("R.confirm()") { r ->
+                              busy = false
+                              val t = SystemClock.elapsedRealtime()
+                              val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
+                              val changed = (wv.url ?: "") != (urlAtSubmit ?: "")
+                              if (o.optBoolean("gone") || o.optBoolean("ok") || changed) {
+                                  markDone("")
+                              } else if (t - since > 60000) {
+                                  markDone(" (could not confirm - please check Rumble)")
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          RBU_EOF
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RumbleUploader-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest APK
+          files: app/build/outputs/apk/debug/app-debug.apk
+
