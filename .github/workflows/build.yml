@@ -79,6 +79,9 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <application
                   android:label="Rumble Batch Uploader"
                   android:allowBackup="false"
@@ -93,6 +96,10 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+                  <service
+                      android:name=".RbuService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
               </application>
           </manifest>
           RBU_EOF
@@ -105,11 +112,13 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.SharedPreferences
+          import android.content.pm.PackageManager
           import android.graphics.Color
           import android.net.Uri
           import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
+          import android.os.Build
           import android.os.PowerManager
           import android.os.SystemClock
           import android.provider.DocumentsContract
@@ -133,6 +142,7 @@ jobs:
               companion object {
                   const val UPLOAD_URL = "https://rumble.com/upload.php"
                   const val REQ_TREE = 11
+                  const val REQ_NOTIF = 22
                   const val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
                   const val HELPER = """(function(){
           if(window.__rbu)return;
@@ -152,63 +162,45 @@ jobs:
             return null;
           };
           R.hasTitle=function(){return R.titleEl()?'1':'0';};
-          R.categoryDone=false;
+          R.categoryOpened=false;
+          R.categoryTyped=false;
           R.category=function(){
-            var WANT=/entertainment/i;
-            // 1) native <select> for category
-            var s=document.querySelectorAll('select');
-            for(var i=0;i<s.length;i++){
-              var e=s[i];
-              var k=(e.name+' '+e.id+' '+(e.getAttribute('aria-label')||'')).toLowerCase();
-              if(k.indexOf('categ')>=0){
-                var opts=e.options;
-                if(!WANT.test((opts[e.selectedIndex]||{}).text||'')){
-                  var pick=-1;
-                  for(var j=0;j<opts.length;j++){ if(WANT.test(opts[j].text)){pick=j;break;} }
-                  if(pick<0){ for(var j2=0;j2<opts.length;j2++){ if(opts[j2].value){pick=j2;break;} } }
-                  if(pick>=0){ e.selectedIndex=pick; e.dispatchEvent(new Event('change',{bubbles:true})); }
-                }
-                return WANT.test((opts[e.selectedIndex]||{}).text||'')?'ok':'none';
+            var WANT=/^entertainment$/i;
+            // Rumble's real bound field - authoritative check
+            var hp=document.querySelector('input[name=category_primary]');
+            if(hp && hp.value && hp.value!=='0' && hp.value!=='') return 'ok';
+            // the visible text box the user clicks to open the category list
+            var box=document.querySelector('input[name="primary-category"]') ||
+                     document.querySelector('input[placeholder*="rimary categor" i]');
+            if(!box || !R.vis(box)) return 'none';
+            if(!R.categoryOpened){
+              R.categoryOpened=true;
+              box.focus();
+              box.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+              box.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+              box.click();
+              return 'opening';
+            }
+            // look for the "Entertainment" option in whatever list just opened
+            var cands=document.querySelectorAll('li,div,span,a,[role=option],[role=listitem],button,label');
+            for(var i=0;i<cands.length;i++){
+              var e=cands[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              if(e===box)continue;
+              var t=R.txt(e);
+              if(t.length<40 && WANT.test(t)){
+                e.click();
+                return 'clicked';
               }
             }
-            // 2) already-picked pill/tag showing "Entertainment" text somewhere in a category-ish area
-            var already=document.querySelectorAll('[class*="categ" i],[data-*="categ" i]');
-            for(var a=0;a<already.length;a++){
-              if(R.vis(already[a])&&WANT.test(R.txt(already[a]))) return 'ok';
+            // nothing matched yet - try typing to trigger a filtered list
+            if(!R.categoryTyped){
+              R.categoryTyped=true;
+              try{ R.setVal(box,'Entertainment'); }catch(e){}
+              return 'opening';
             }
-            // 3) a clickable option already on screen reading "Entertainment"
-            var opts2=document.querySelectorAll('label,li,button,div,span,a,[role=option],[role=radio],[role=button]');
-            var target=null;
-            for(var b=0;b<opts2.length;b++){
-              var el=opts2[b];
-              if(!R.vis(el)||R.inNav(el))continue;
-              var t=R.txt(el);
-              if(t.length<40&&WANT.test(t)&&/^entertainment$/i.test(t)){ target=el; break; }
-            }
-            if(target){
-              var already2=target.getAttribute('aria-checked')==='true'||target.getAttribute('aria-selected')==='true'||target.classList.contains('selected')||target.classList.contains('active')||target.classList.contains('checked');
-              var cb=target.querySelector&&target.querySelector('input[type=checkbox],input[type=radio]');
-              if(cb&&cb.checked)already2=true;
-              if(!already2){ target.click(); }
-              var now=target.getAttribute('aria-checked')==='true'||target.getAttribute('aria-selected')==='true'||target.classList.contains('selected')||target.classList.contains('active')||target.classList.contains('checked');
-              if(cb&&cb.checked)now=true;
-              if(now||already2){ R.categoryDone=true; return 'ok'; }
-              return 'clicked';
-            }
-            if(R.categoryDone) return 'ok';
-            // 4) need to open a category picker/dropdown first
-            var trig=document.querySelectorAll('label,button,div,span,a,[role=button],input');
-            var openEl=null;
-            for(var c=0;c<trig.length;c++){
-              var el2=trig[c];
-              if(!R.vis(el2)||R.inNav(el2))continue;
-              var tt=(R.txt(el2)+' '+(el2.getAttribute('placeholder')||'')+' '+(el2.getAttribute('aria-label')||'')).toLowerCase();
-              if(tt.length<60&&/(select|choose|add).{0,15}categor|^categor(y|ies)$|primary categor/.test(tt)){ openEl=el2; break; }
-            }
-            if(openEl){ if(!R.categoryOpened){ R.categoryOpened=true; openEl.click(); } return 'opening'; }
             return 'none';
           };
-          R.categoryOpened=false;
           R.agree=function(){
             var n=0;
             var c=document.querySelectorAll('input[type=checkbox]');
@@ -276,7 +268,7 @@ jobs:
             }
             return found;
           };
-                    R.tickForm=function(t){
+          R.tickForm=function(t){
             var o={title:false};
             var e=R.titleEl();
             if(e){ if(e.value!==t)R.setVal(e,t); o.title=(e.value===t); }
@@ -305,7 +297,7 @@ jobs:
           R.confirm=function(){
             return JSON.stringify({gone:!R.titleEl(),ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||'')});
           };
-          R.pickRect=function(){
+                    R.pickRect=function(){
             var re=/(select|choose|browse|pick).{0,20}(video|file)|drag.{0,20}drop|drop.{0,20}here|upload (a )?(video|file)/i;
             var els=document.querySelectorAll('button,label,a,div,span,[role=button]');
             var best=null;
@@ -511,6 +503,16 @@ jobs:
                   }
               }
 
+              private fun cleanTitle(raw: String): String {
+                  var t = raw
+                  // drop (...) and {...} segments, including nested ones
+                  repeat(5) {
+                      t = t.replace(Regex("\\([^()]*\\)"), " ")
+                      t = t.replace(Regex("\\{[^{}]*\\}"), " ")
+                  }
+                  return t.replace(Regex("\\s{2,}"), " ").trim()
+              }
+
               private fun natKey(s: String): List<String> =
                   Regex("\\d+|\\D+").findAll(s.lowercase()).map { it.value }.toList()
 
@@ -554,7 +556,7 @@ jobs:
                   queue = list.sortedWith(natCmp)
                   failed.clear()
                   log("Folder loaded: ${queue.size} video(s).")
-                                }
+              }
 
               // ---------- progress ----------
               private fun doneSet(): Set<String> = prefs.getStringSet("done", emptySet()) ?: emptySet()
@@ -595,9 +597,16 @@ jobs:
                   busy = false
                   state = S.IDLE
                   try {
-                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                                        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                       wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:run")
                       wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+                  if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
+                  }
+                  try {
+                      val svc = Intent(this, RbuService::class.java)
+                      if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
                   } catch (e: Exception) { }
                   updateStatus()
                   h.post(ticker)
@@ -607,6 +616,7 @@ jobs:
                   running = false
                   busy = false
                   releaseWake()
+                  try { stopService(Intent(this, RbuService::class.java)) } catch (e: Exception) { }
                   log(msg)
                   updateStatus()
               }
@@ -746,7 +756,7 @@ jobs:
                       }
                       S.UPLOADING -> {
                           busy = true
-                          val title = v!!.name.substringBeforeLast('.')
+                          val title = cleanTitle(v!!.name.substringBeforeLast('.'))
                           runJs("R.tickForm(" + JSONObject.quote(title) + ")") { r ->
                               busy = false
                               val t = SystemClock.elapsedRealtime()
@@ -815,6 +825,61 @@ jobs:
                           }
                       }
                   }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/RbuService.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+
+          class RbuService : Service() {
+              private var wake: PowerManager.WakeLock? = null
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val chId = "rbu_channel"
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val nm = getSystemService(NotificationManager::class.java)
+                      val ch = NotificationChannel(chId, "Rumble Uploader", NotificationManager.IMPORTANCE_LOW)
+                      nm.createNotificationChannel(ch)
+                  }
+                  val notif: Notification =
+                      (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, chId) else Notification.Builder(this))
+                          .setContentTitle("Rumble Uploader")
+                          .setContentText("Uploading videos in the background…")
+                          .setSmallIcon(android.R.drawable.stat_sys_upload)
+                          .setOngoing(true)
+                          .build()
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                      } else {
+                          startForeground(1, notif)
+                      }
+                  } catch (e: Exception) { }
+                  try {
+                      val pm = getSystemService(POWER_SERVICE) as PowerManager
+                      wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:service")
+                      wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+              override fun onDestroy() {
+                  try { if (wake?.isHeld == true) wake?.release() } catch (e: Exception) { }
+                  super.onDestroy()
               }
           }
           RBU_EOF
