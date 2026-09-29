@@ -164,6 +164,7 @@ jobs:
           R.hasTitle=function(){return R.titleEl()?'1':'0';};
           R.categoryOpened=false;
           R.categoryTyped=false;
+          R.categoryTries=0;
           R.category=function(){
             var WANT=/^entertainment$/i;
             // Rumble's real bound field - authoritative check
@@ -173,6 +174,30 @@ jobs:
             var box=document.querySelector('input[name="primary-category"]') ||
                      document.querySelector('input[placeholder*="rimary categor" i]');
             if(!box || !R.vis(box)) return 'none';
+            var br=box.getBoundingClientRect();
+
+            function nearBox(el){
+              var r=el.getBoundingClientRect();
+              if(r.width<1||r.height<1)return false;
+              if(r.top < br.top - 5) return false;           // must be at/below the box, not above (rules out far-away page content)
+              if(r.top - br.bottom > 400) return false;       // not absurdly far below (rules out footer/sidebar links)
+              if(r.right < br.left - 40 || r.left > br.right + 400) return false; // roughly under/near the box, not across the page
+              return true;
+            }
+            function findAndClick(){
+              var cands=document.querySelectorAll('li,div,span,a,[role=option],[role=listitem],button,label,td');
+              for(var i=0;i<cands.length;i++){
+                var e=cands[i];
+                if(!R.vis(e)||R.inNav(e)||e===box)continue;
+                var t=R.txt(e);
+                if(t.length<40 && WANT.test(t) && nearBox(e)){
+                  e.click();
+                  return true;
+                }
+              }
+              return false;
+            }
+
             if(!R.categoryOpened){
               R.categoryOpened=true;
               box.focus();
@@ -181,24 +206,27 @@ jobs:
               box.click();
               return 'opening';
             }
-            // look for the "Entertainment" option in whatever list just opened
-            var cands=document.querySelectorAll('li,div,span,a,[role=option],[role=listitem],button,label');
-            for(var i=0;i<cands.length;i++){
-              var e=cands[i];
-              if(!R.vis(e)||R.inNav(e))continue;
-              if(e===box)continue;
-              var t=R.txt(e);
-              if(t.length<40 && WANT.test(t)){
-                e.click();
-                return 'clicked';
-              }
-            }
-            // nothing matched yet - try typing to trigger a filtered list
-            if(!R.categoryTyped){
-              R.categoryTyped=true;
-              try{ R.setVal(box,'Entertainment'); }catch(e){}
+            if(findAndClick()) return 'clicked';
+
+            // nothing near the box yet - drive real key events so Rumble's own filter fires
+            R.categoryTries++;
+            if(R.categoryTries===2){
+              try{
+                box.focus();
+                box.value='';
+                box.dispatchEvent(new Event('input',{bubbles:true}));
+                var s='Entertainment';
+                for(var k=0;k<s.length;k++){
+                  box.value=s.slice(0,k+1);
+                  box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:s[k]}));
+                  box.dispatchEvent(new Event('input',{bubbles:true}));
+                  box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:s[k]}));
+                }
+                box.dispatchEvent(new Event('change',{bubbles:true}));
+              }catch(e){}
               return 'opening';
             }
+            if(R.categoryTries>2 && findAndClick()) return 'clicked';
             return 'none';
           };
           R.agree=function(){
@@ -287,17 +315,35 @@ jobs:
             if(b){ o.submit=(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))?'disabled':'ready'; }
             var er=txt.match(/(upload failed|failed to upload|something went wrong|error occurred)/i);
             o.err=er?er[0]:'';
-            return JSON.stringify(o);
+                        return JSON.stringify(o);
           };
           R.clickSubmit=function(){
             var b=R.submitBtn();
             if(b&&!b.disabled){b.click();return '1';}
             return '0';
           };
+          R.stage2Clicked=false;
           R.confirm=function(){
-            return JSON.stringify({gone:!R.titleEl(),ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||'')});
+            R.agree(); // tick any newly-shown rights/terms checkboxes on this second stage
+            var clicked=false;
+            if(!R.stage2Clicked){
+              var b=R.submitBtn();
+              if(b){
+                var label=R.txt(b).toLowerCase();
+                if(label!=='back' && !b.disabled && !b.classList.contains('disabled')){
+                  b.click();
+                  R.stage2Clicked=true;
+                  clicked=true;
+                }
+              }
+            }
+            return JSON.stringify({
+              gone:!R.titleEl(),
+              ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||''),
+              clicked:clicked
+            });
           };
-                    R.pickRect=function(){
+          R.pickRect=function(){
             var re=/(select|choose|browse|pick).{0,20}(video|file)|drag.{0,20}drop|drop.{0,20}here|upload (a )?(video|file)/i;
             var els=document.querySelectorAll('button,label,a,div,span,[role=button]');
             var best=null;
@@ -367,6 +413,7 @@ jobs:
               private var picks = 0
               private var stable = 0
               private var catLogged = false
+              private var stage2Logged = false
               private var pageLoaded = false
               private var chooserServed = false
               private var pendingUri: Uri? = null
@@ -585,7 +632,7 @@ jobs:
 
               private fun log(m: String) {
                   logView.append(m + "\n")
-                  if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
+                                    if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
                   logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
               }
 
@@ -597,7 +644,7 @@ jobs:
                   busy = false
                   state = S.IDLE
                   try {
-                                        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                       wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:run")
                       wake?.acquire(12 * 60 * 60 * 1000L)
                   } catch (e: Exception) { }
@@ -701,6 +748,7 @@ jobs:
                           stable = 0
                           lastTap = 0
                           catLogged = false
+                          stage2Logged = false
                           wv.loadUrl(UPLOAD_URL)
                           state = S.LOADING
                           since = now
@@ -817,9 +865,13 @@ jobs:
                               val t = SystemClock.elapsedRealtime()
                               val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
                               val changed = (wv.url ?: "") != (urlAtSubmit ?: "")
+                              if (o.optBoolean("clicked") && !stage2Logged) {
+                                  stage2Logged = true
+                                  log("  confirmed rights/terms and submitted final step")
+                              }
                               if (o.optBoolean("gone") || o.optBoolean("ok") || changed) {
                                   markDone("")
-                              } else if (t - since > 60000) {
+                              } else if (t - since > 90000) {
                                   markDone(" (could not confirm - please check Rumble)")
                               }
                           }
