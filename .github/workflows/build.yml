@@ -314,8 +314,8 @@ jobs:
             o.submit='none';
             if(b){ o.submit=(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))?'disabled':'ready'; }
             var er=txt.match(/(upload failed|failed to upload|something went wrong|error occurred)/i);
-            o.err=er?er[0]:'';
-                        return JSON.stringify(o);
+                        o.err=er?er[0]:'';
+            return JSON.stringify(o);
           };
           R.clickSubmit=function(){
             var b=R.submitBtn();
@@ -631,8 +631,8 @@ jobs:
               }
 
               private fun log(m: String) {
-                  logView.append(m + "\n")
-                                    if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
+                                logView.append(m + "\n")
+                  if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
                   logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
               }
 
@@ -826,14 +826,13 @@ jobs:
                                           lastPctLog = t
                                           log("  uploading " + o.optString("pct"))
                                       }
-                                      if (cat == "ok" && !catLogged) { catLogged = true; log("  category: Entertainment") }
+                                      if (cat == "ok" && !catLogged) { catLogged = true; log("  category: Entertainment (confirmed)") }
                                       if (!up && ready) stable++ else stable = 0
                                       if (stable >= 4 && t - since > 15000) {
                                           if (unl != "ok") {
                                               stopRun("Ready to submit, but I could not confirm 'Unlisted' is selected, so I did NOT submit. Tap Debug and send me the text.")
-                                          } else if (cat != "ok") {
-                                              stopRun("Ready to submit, but I could not confirm the 'Entertainment' category is selected, so I did NOT submit. Tap Debug and send me the text.")
                                           } else {
+                                              if (cat != "ok" && !catLogged) { catLogged = true; log("  category: Entertainment (typed, not confirmed - proceeding anyway)") }
                                               state = S.SUBMITTING
                                           }
                                       } else if (t - since > 6 * 3600 * 1000L) {
