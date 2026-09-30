@@ -227,6 +227,16 @@ jobs:
               return 'opening';
             }
             if(R.categoryTries>2 && findAndClick()) return 'clicked';
+            // last resort: keyboard-select the highlighted suggestion, the standard way these widgets work
+            if(R.categoryTries===5){
+              box.focus();
+              box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'ArrowDown',keyCode:40,which:40}));
+              box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'ArrowDown',keyCode:40,which:40}));
+            }
+            if(R.categoryTries===7){
+              box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter',keyCode:13,which:13}));
+              box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'Enter',keyCode:13,which:13}));
+            }
             return 'none';
           };
           R.agree=function(){
@@ -314,8 +324,8 @@ jobs:
             o.submit='none';
             if(b){ o.submit=(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))?'disabled':'ready'; }
             var er=txt.match(/(upload failed|failed to upload|something went wrong|error occurred)/i);
-                        o.err=er?er[0]:'';
-            return JSON.stringify(o);
+            o.err=er?er[0]:'';
+                        return JSON.stringify(o);
           };
           R.clickSubmit=function(){
             var b=R.submitBtn();
@@ -500,6 +510,27 @@ jobs:
                           }
                           return true
                       }
+                      override fun onJsBeforeUnload(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm() // auto "Leave this Page" - never block waiting for the user
+                          return true
+                      }
+                      override fun onJsConfirm(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm()
+                          return true
+                      }
+                      override fun onJsAlert(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm()
+                          return true
+                      }
                   }
                   root.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 3f))
 
@@ -552,10 +583,11 @@ jobs:
 
               private fun cleanTitle(raw: String): String {
                   var t = raw
-                  // drop (...) and {...} segments, including nested ones
+                  // drop (...), {...} and [...] segments, including nested ones
                   repeat(5) {
                       t = t.replace(Regex("\\([^()]*\\)"), " ")
                       t = t.replace(Regex("\\{[^{}]*\\}"), " ")
+                      t = t.replace(Regex("\\[[^\\[\\]]*\\]"), " ")
                   }
                   return t.replace(Regex("\\s{2,}"), " ").trim()
               }
@@ -620,7 +652,7 @@ jobs:
               }
 
               private fun resetProgress() {
-                  prefs.edit().remove("done").apply()
+                                prefs.edit().remove("done").apply()
                   failed.clear()
                   log("Progress reset: all videos will be uploaded again.")
                   updateStatus()
@@ -631,7 +663,7 @@ jobs:
               }
 
               private fun log(m: String) {
-                                logView.append(m + "\n")
+                  logView.append(m + "\n")
                   if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
                   logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
               }
