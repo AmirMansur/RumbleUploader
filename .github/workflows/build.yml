@@ -78,10 +78,12 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
               <uses-permission android:name="android.permission.WAKE_LOCK" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
               <application
                   android:label="Rumble Batch Uploader"
                   android:allowBackup="false"
@@ -134,6 +136,10 @@ jobs:
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
+          import android.graphics.PixelFormat
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.FrameLayout
           import org.json.JSONObject
           import org.json.JSONTokener
 
@@ -162,82 +168,68 @@ jobs:
             return null;
           };
           R.hasTitle=function(){return R.titleEl()?'1':'0';};
-          R.categoryOpened=false;
-          R.categoryTyped=false;
-          R.categoryTries=0;
+          R.catBox=function(){return document.querySelector('input[name="primary-category"]');};
           R.category=function(){
-            var WANT=/^entertainment$/i;
-            // Rumble's real bound field - authoritative check
             var hp=document.querySelector('input[name=category_primary]');
-            if(hp && hp.value && hp.value!=='0' && hp.value!=='') return 'ok';
-            // the visible text box the user clicks to open the category list
-            var box=document.querySelector('input[name="primary-category"]') ||
-                     document.querySelector('input[placeholder*="rimary categor" i]');
-            if(!box || !R.vis(box)) return 'none';
-            var br=box.getBoundingClientRect();
-
-            function nearBox(el){
-              var r=el.getBoundingClientRect();
-              if(r.width<1||r.height<1)return false;
-              if(r.top < br.top - 5) return false;           // must be at/below the box, not above (rules out far-away page content)
-              if(r.top - br.bottom > 400) return false;       // not absurdly far below (rules out footer/sidebar links)
-              if(r.right < br.left - 40 || r.left > br.right + 400) return false; // roughly under/near the box, not across the page
-              return true;
-            }
-            function findAndClick(){
-              var cands=document.querySelectorAll('li,div,span,a,[role=option],[role=listitem],button,label,td');
-              for(var i=0;i<cands.length;i++){
-                var e=cands[i];
-                if(!R.vis(e)||R.inNav(e)||e===box)continue;
-                var t=R.txt(e);
-                if(t.length<40 && WANT.test(t) && nearBox(e)){
-                  e.click();
-                  return true;
-                }
-              }
-              return false;
-            }
-
-            if(!R.categoryOpened){
-              R.categoryOpened=true;
-              box.focus();
-              box.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
-              box.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
-              box.click();
-              return 'opening';
-            }
-            if(findAndClick()) return 'clicked';
-
-            // nothing near the box yet - drive real key events so Rumble's own filter fires
-            R.categoryTries++;
-            if(R.categoryTries===2){
-              try{
-                box.focus();
-                box.value='';
-                box.dispatchEvent(new Event('input',{bubbles:true}));
-                var s='Entertainment';
-                for(var k=0;k<s.length;k++){
-                  box.value=s.slice(0,k+1);
-                  box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:s[k]}));
-                  box.dispatchEvent(new Event('input',{bubbles:true}));
-                  box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:s[k]}));
-                }
-                box.dispatchEvent(new Event('change',{bubbles:true}));
-              }catch(e){}
-              return 'opening';
-            }
-            if(R.categoryTries>2 && findAndClick()) return 'clicked';
-            // last resort: keyboard-select the highlighted suggestion, the standard way these widgets work
-            if(R.categoryTries===5){
-              box.focus();
-              box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'ArrowDown',keyCode:40,which:40}));
-              box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'ArrowDown',keyCode:40,which:40}));
-            }
-            if(R.categoryTries===7){
-              box.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter',keyCode:13,which:13}));
-              box.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'Enter',keyCode:13,which:13}));
-            }
+            var box=R.catBox();
+            if(!hp)return 'none';
+            if(hp.value==='15'){
+            try{ if(box&&document.activeElement===box)box.blur(); }catch(e){}
+            return 'ok';
+          }
             return 'none';
+          };
+          R.findOpt=function(){
+            var cands=document.querySelectorAll('li,div,span,a,p,td,[role=option],[role=listitem],button,label');
+            var best=null;
+            for(var i=0;i<cands.length;i++){
+              var e=cands[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              if(/^entertainment$/i.test(R.txt(e))){
+                if(!best||e.innerHTML.length<best.innerHTML.length)best=e;
+              }
+            }
+            return best;
+          };
+          R.rectOf=function(e,kind){
+            e.scrollIntoView({block:'center'});
+            var r=e.getBoundingClientRect();
+            if(r.width<2||r.height<2)return '0';
+            return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2,iw:window.innerWidth,kind:kind});
+          };
+          R.synth=function(e){
+            var ms=['pointerdown','mousedown','pointerup','mouseup','click'];
+            for(var i=0;i<ms.length;i++){
+              try{e.dispatchEvent(new MouseEvent(ms[i],{bubbles:true,cancelable:true,view:window}));}catch(x){}
+            }
+            try{if(window.jQuery){window.jQuery(e).trigger('mousedown').trigger('mouseup').trigger('click');}}catch(x){}
+          };
+          R.catOptEl=function(){return document.querySelector('.select-option[data-value="15"]');};
+          R.catScroll=function(k){
+            var e=(k==='box')?R.catBox():R.catOptEl();
+            if(!e)return '0';
+            if(k==='box'||R.vis(e))e.scrollIntoView({block:'center'});
+            return '1';
+          };
+          R.catRect=function(k){
+            var e;
+            if(k==='box'){
+              var o=R.catOptEl();
+              if(o&&R.vis(o))return 'open';
+              e=R.catBox();
+            }else{
+              e=R.catOptEl();
+            }
+            if(!e||!R.vis(e))return '0';
+            var r=e.getBoundingClientRect();
+            if(r.width<2||r.height<2)return '0';
+            return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2,iw:window.innerWidth});
+          };
+          R.catSynth=function(){
+            var e=R.catOptEl();
+            if(!e)return 'noopt';
+            R.synth(e);
+            return 'synth';
           };
           R.agree=function(){
             var n=0;
@@ -325,33 +317,62 @@ jobs:
             if(b){ o.submit=(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))?'disabled':'ready'; }
             var er=txt.match(/(upload failed|failed to upload|something went wrong|error occurred)/i);
             o.err=er?er[0]:'';
-                        return JSON.stringify(o);
+            return JSON.stringify(o);
           };
-          R.clickSubmit=function(){
+          R.submitRect=function(){
             var b=R.submitBtn();
-            if(b&&!b.disabled){b.click();return '1';}
-            return '0';
+            if(!b||b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))return '0';
+            b.scrollIntoView({block:'center'});
+            var r=b.getBoundingClientRect();
+            if(r.width<2||r.height<2)return '0';
+            return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2,iw:window.innerWidth,txt:R.txt(b).slice(0,20)});
           };
           R.stage2Clicked=false;
-          R.confirm=function(){
-            R.agree(); // tick any newly-shown rights/terms checkboxes on this second stage
-            var clicked=false;
-            if(!R.stage2Clicked){
-              var b=R.submitBtn();
-              if(b){
-                var label=R.txt(b).toLowerCase();
-                if(label!=='back' && !b.disabled && !b.classList.contains('disabled')){
-                  b.click();
-                  R.stage2Clicked=true;
-                  clicked=true;
-                }
+          R.licensePicked=false;
+          R.pickLicense=function(){
+            if(R.licensePicked) return false;
+            var els=document.querySelectorAll('div,label,li,span,button,[role=button],[role=radio],a');
+                        var best=null;
+            for(var i=0;i<els.length;i++){
+              var e=els[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              var t=R.txt(e);
+              if(/^personal use\b/i.test(t)){
+                if(!best || t.length<R.txt(best).length) best=e;
               }
             }
-            return JSON.stringify({
-              gone:!R.titleEl(),
-              ok:/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(document.body.innerText||''),
-              clicked:clicked
-            });
+            if(best){
+              best.click();
+              R.licensePicked=true;
+              return true; // just clicked - let the page settle before trying to submit
+            }
+            return false;
+          };
+                    R.s2Btn=function(){
+            var q=document.querySelectorAll('input[name=submitForm2],button[name=submitForm2],#submitForm2');
+            for(var i=0;i<q.length;i++){ if(R.vis(q[i]))return q[i]; }
+            var c=document.querySelectorAll('button,input[type=button],input[type=submit],[role=button]');
+            for(var k=0;k<c.length;k++){
+              var e=c[k];
+              if(!R.vis(e)||R.inNav(e))continue;
+              if(/^submit$/i.test(R.txt(e)))return e;
+            }
+            return null;
+          };
+          R.s2=function(){
+            var o={vis:false,title:!!R.titleEl(),lic:false,disabled:false};
+            var txt=document.body.innerText||'';
+            o.ok=/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(txt);
+            var b=R.s2Btn();
+            if(!b)return JSON.stringify(o);
+            o.vis=true;
+            o.lic=R.pickLicense();
+            R.agree();
+            o.disabled=!!(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'));
+            b.scrollIntoView({block:'center'});
+            var r=b.getBoundingClientRect();
+            if(r.width>1&&r.height>1){o.x=r.left+r.width/2;o.y=r.top+r.height/2;o.iw=window.innerWidth;}
+            return JSON.stringify(o);
           };
           R.pickRect=function(){
             var re=/(select|choose|browse|pick).{0,20}(video|file)|drag.{0,20}drop|drop.{0,20}here|upload (a )?(video|file)/i;
@@ -393,6 +414,18 @@ jobs:
             o.fields=list('input,textarea,select',false,function(e){return [e.tagName,e.type,e.name,e.id,e.placeholder,(e.value+'').slice(0,20),R.vis(e)?'vis':'hid',e.checked?'chk':''].join('|');});
             o.buttons=list('button,[role=button],input[type=submit],label',true,function(e){return R.txt(e).slice(0,40);});
             o.text=(document.body.innerText||'').replace(/\s+/g,' ').slice(0,700);
+            try{
+              var all=document.querySelectorAll('li,div,span,a,label,td,p');
+              var f=null;
+              for(var q=0;q<all.length;q++){
+                if(/^entertainment$/i.test((all[q].textContent||'').trim())){
+                  if(!f||all[q].outerHTML.length<f.outerHTML.length)f=all[q];
+                }
+              }
+              o.catdbg=f?{vis:R.vis(f),html:f.outerHTML.slice(0,200),parent:(f.parentElement?f.parentElement.outerHTML.slice(0,200):'')}:'no element with exact text Entertainment in DOM';
+              var bx=R.catBox();
+              o.catbox=bx?bx.outerHTML.slice(0,250):'no box';
+            }catch(e){o.catdbg='err '+e;}
             return JSON.stringify(o);
           };
           window.__rbu=R;
@@ -405,6 +438,17 @@ jobs:
               data class Vid(val id: String, val name: String, val uri: Uri)
 
               private lateinit var wv: WebView
+              private lateinit var root: LinearLayout
+              private lateinit var lockLayer: FrameLayout
+              private lateinit var lockLabel: TextView
+              private lateinit var unlockBtn: Button
+              private var floatBtn: Button? = null
+              private var locked = false
+              private var floating = false
+              private var floatBox: FrameLayout? = null
+              private var placeholder: TextView? = null
+              private var floatTaps = 0
+              private var lastFloatTap = 0L
               private lateinit var logView: TextView
               private lateinit var logScroll: ScrollView
               private lateinit var statusView: TextView
@@ -424,6 +468,14 @@ jobs:
               private var stable = 0
               private var catLogged = false
               private var stage2Logged = false
+              private var lastCatTap = 0L
+              private var s1Taps = 0
+              private var catRounds = 0
+              private var catWaitLogged = false
+              private var s2Taps = 0
+              private var s2First = 0L
+              private var lastS2Tap = 0L
+              private var disLogged = false
               private var pageLoaded = false
               private var chooserServed = false
               private var pendingUri: Uri? = null
@@ -437,7 +489,7 @@ jobs:
                   window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                   prefs = getSharedPreferences("rbu", Context.MODE_PRIVATE)
 
-                  val root = LinearLayout(this)
+                  root = LinearLayout(this)
                   root.orientation = LinearLayout.VERTICAL
                   root.setBackgroundColor(Color.parseColor("#111111"))
 
@@ -467,6 +519,12 @@ jobs:
                       btn("Skip video") { skipCurrent() },
                       btn("Debug") { debugDump() },
                       btn("Reset progress") { resetProgress() }
+                  ))
+                  floatBtn = btn("Float") { toggleFloat() }
+                  root.addView(row(
+                      btn("Lock") { lockScreen(false) },
+                      btn("Dim") { lockScreen(true) },
+                      floatBtn!!
                   ))
 
                   statusView = TextView(this)
@@ -532,7 +590,7 @@ jobs:
                           return true
                       }
                   }
-                  root.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 3f))
+                  root.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
 
                   logView = TextView(this)
                   logView.setTextColor(Color.parseColor("#9fe870"))
@@ -541,9 +599,26 @@ jobs:
                   logView.setTextIsSelectable(true)
                   logScroll = ScrollView(this)
                   logScroll.addView(logView)
-                  root.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f))
+                  root.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.2f))
 
-                  setContentView(root)
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val wc = ViewGroup.LayoutParams.WRAP_CONTENT
+                  val frame = FrameLayout(this)
+                  frame.addView(root, FrameLayout.LayoutParams(mp, mp))
+                  lockLayer = FrameLayout(this)
+                  lockLayer.visibility = View.GONE
+                  lockLayer.isClickable = true
+                  lockLabel = TextView(this)
+                  lockLabel.setTextColor(Color.WHITE)
+                  lockLabel.textSize = 18f
+                  lockLayer.addView(lockLabel, FrameLayout.LayoutParams(wc, wc, Gravity.CENTER))
+                  unlockBtn = Button(this)
+                  unlockBtn.text = "Unlock"
+                  unlockBtn.isAllCaps = false
+                  unlockBtn.setOnClickListener { unlockScreen() }
+                  lockLayer.addView(unlockBtn, FrameLayout.LayoutParams(wc, wc, Gravity.TOP or Gravity.END))
+                  frame.addView(lockLayer, FrameLayout.LayoutParams(mp, mp))
+                  setContentView(frame)
                   wv.loadUrl(UPLOAD_URL)
                   log("1) Log in to Rumble in the browser above.\n2) Tap 'Select folder' and pick your videos folder.\n3) Tap 'Start'.\nBy using this app you confirm you own the videos and agree to Rumble's terms.")
 
@@ -557,8 +632,192 @@ jobs:
               override fun onDestroy() {
                   h.removeCallbacksAndMessages(null)
                   releaseWake()
+                  if (floating) { try { dock(false) } catch (e: Exception) { } }
                   wv.destroy()
                   super.onDestroy()
+              }
+
+              // ---------- lock / dim ----------
+              private fun resetBrightness() {
+                  val a = window.attributes
+                  a.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                  window.attributes = a
+              }
+
+              private fun lockScreen(dim: Boolean) {
+                  locked = true
+                  if (dim) {
+                      lockLayer.setBackgroundColor(Color.BLACK)
+                      lockLabel.text = ""
+                      unlockBtn.setTextColor(Color.parseColor("#777777"))
+                      unlockBtn.setBackgroundColor(Color.parseColor("#151515"))
+                      val a = window.attributes
+                      a.screenBrightness = 0.01f
+                      window.attributes = a
+                  } else {
+                      lockLayer.setBackgroundColor(Color.parseColor("#66000000"))
+                      lockLabel.text = "🔒 Locked"
+                      unlockBtn.setTextColor(Color.WHITE)
+                      unlockBtn.setBackgroundColor(Color.parseColor("#CC333333"))
+                      resetBrightness()
+                  }
+                  lockLayer.visibility = View.VISIBLE
+              }
+
+              private fun unlockScreen() {
+                  locked = false
+                                    lockLayer.visibility = View.GONE
+                  resetBrightness()
+              }
+
+              override fun onBackPressed() {
+                  if (locked) return
+                  super.onBackPressed()
+              }
+
+              // ---------- floating window ----------
+              private fun toggleFloat() {
+                  if (floating) dock(false) else startFloat()
+              }
+
+              private fun makeShield(lp: WindowManager.LayoutParams, wm: WindowManager, box: View): View {
+                  val shield = View(this)
+                  var downX = 0f
+                  var downY = 0f
+                  var startX = 0
+                  var startY = 0
+                  var dragged = false
+                  shield.setOnTouchListener { _, ev ->
+                      when (ev.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              downX = ev.rawX
+                              downY = ev.rawY
+                              startX = lp.x
+                              startY = lp.y
+                              dragged = false
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = ev.rawX - downX
+                                                            val dy = ev.rawY - downY
+                              if (!dragged && (Math.abs(dx) > dp(12) || Math.abs(dy) > dp(12))) dragged = true
+                              if (dragged) {
+                                  lp.x = startX + dx.toInt()
+                                  lp.y = startY + dy.toInt()
+                                  try { wm.updateViewLayout(box, lp) } catch (e: Exception) { }
+                              }
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (!dragged) floatTap()
+                          }
+                      }
+                      true
+                  }
+                  return shield
+              }
+
+              private fun floatTap() {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastFloatTap > 700) floatTaps = 0
+                  lastFloatTap = now
+                  floatTaps++
+                  if (floatTaps >= 3) {
+                      floatTaps = 0
+                      h.post { dock(true) }
+                  }
+              }
+
+              private fun startFloat() {
+                  if (floating) return
+                  if (!android.provider.Settings.canDrawOverlays(this)) {
+                      log("Allow 'Display over other apps' for this app on the screen that just opened, then tap Float again.")
+                      try {
+                          startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                      } catch (e: Exception) { }
+                      return
+                  }
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val dm = resources.displayMetrics
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val idx = root.indexOfChild(wv)
+                  root.removeView(wv)
+                  val ph = TextView(this)
+                  ph.text = "Browser is floating as a small bubble.\nTriple-tap the bubble, or press Dock, to bring it back."
+                  ph.setTextColor(Color.WHITE)
+                  ph.gravity = Gravity.CENTER
+                  root.addView(ph, if (idx < 0) root.childCount else idx, LinearLayout.LayoutParams(mp, 0, 4f))
+                  placeholder = ph
+
+                  // Bubble is tiny (like a screen-recorder pill), but the real WebView inside it
+                  // is kept at a normal working size and just visually scaled down to fit -
+                  // Android still treats it as a fully live, attached, non-zero-size view.
+                  val bubbleDp = 52
+                  val bubblePx = dp(bubbleDp)
+                  val innerDp = 360
+                  val innerPx = dp(innerDp)
+                  val scale = bubblePx.toFloat() / innerPx.toFloat()
+
+                  val box = FrameLayout(this)
+                  box.clipChildren = true
+                  box.clipToOutline = true
+                  box.background = android.graphics.drawable.GradientDrawable().apply {
+                      shape = android.graphics.drawable.GradientDrawable.OVAL
+                      setColor(Color.parseColor("#9FE870"))
+                      setStroke(dp(2), Color.parseColor("#1b5e20"))
+                  }
+                  box.addView(wv, FrameLayout.LayoutParams(innerPx, innerPx))
+                  wv.pivotX = 0f
+                  wv.pivotY = 0f
+                  wv.scaleX = scale
+                  wv.scaleY = scale
+
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+                  val lp = WindowManager.LayoutParams(
+                      bubblePx, bubblePx,
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+                  lp.x = dm.widthPixels - bubblePx - dp(12)
+                  lp.y = dp(140)
+                  box.addView(makeShield(lp, wm, box), FrameLayout.LayoutParams(mp, mp))
+                  wm.addView(box, lp)
+                  floatBox = box
+                  floating = true
+                  floatBtn?.text = "Dock"
+                  log("Floating as a small bubble. Triple-tap it to open the app, or drag it to move it.")
+                  h.postDelayed({ moveTaskToBack(true) }, 400)
+              }
+
+              private fun dock(openApp: Boolean) {
+                  if (!floating) return
+                  if (openApp) {
+                      try {
+                          val i = Intent(this, MainActivity::class.java)
+                          i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { }
+                  }
+                  val box = floatBox
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  try { if (box != null) wm.removeView(box) } catch (e: Exception) { }
+                  try { box?.removeView(wv) } catch (e: Exception) { }
+                  wv.scaleX = 1f
+                  wv.scaleY = 1f
+                  wv.pivotX = (wv.width / 2).toFloat()
+                  wv.pivotY = (wv.height / 2).toFloat()
+                  var idx = root.childCount
+                  val ph = placeholder
+                  if (ph != null) {
+                      idx = root.indexOfChild(ph)
+                      root.removeView(ph)
+                  }
+                  if (idx < 0) idx = root.childCount
+                  if (wv.parent == null) root.addView(wv, idx, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
+                  floatBox = null
+                  placeholder = null
+                  floating = false
+                  floatBtn?.text = "Float"
               }
 
               // ---------- folder ----------
@@ -652,7 +911,7 @@ jobs:
               }
 
               private fun resetProgress() {
-                                prefs.edit().remove("done").apply()
+                  prefs.edit().remove("done").apply()
                   failed.clear()
                   log("Progress reset: all videos will be uploaded again.")
                   updateStatus()
@@ -683,6 +942,18 @@ jobs:
                   if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                       requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
                   }
+                  try {
+                      val pmc = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      if (!pmc.isIgnoringBatteryOptimizations(packageName)) {
+                          val i = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                          i.data = Uri.parse("package:$packageName")
+                          startActivity(i)
+                          log("Allow 'unrestricted battery use' on the screen that just opened, then tap Start again.")
+                          running = false
+                          releaseWake()
+                          return
+                      }
+                  } catch (e: Exception) { }
                   try {
                       val svc = Intent(this, RbuService::class.java)
                       if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
@@ -729,7 +1000,7 @@ jobs:
 
               // ---------- JS bridge ----------
               private fun unwrap(r: String?): String? {
-                  if (r == null || r == "null") return null
+                                if (r == null || r == "null") return null
                   return try { (JSONTokener(r).nextValue() as? String) ?: r } catch (e: Exception) { r }
               }
 
@@ -750,9 +1021,47 @@ jobs:
                   }, 90)
               }
 
+              private fun tapFrom(r: String?) {
+                  if (r == null || !r.startsWith("{")) return
+                  try {
+                      val po = JSONObject(r)
+                      val sc = wv.width.toFloat() / po.getDouble("iw").toFloat()
+                      tap(po.getDouble("x").toFloat() * sc, po.getDouble("y").toFloat() * sc)
+                  } catch (e: Exception) { }
+              }
+
+              // One-shot category selection: open box, tap option, then (if needed) synthetic click. No looping.
+              private fun catSequence(round: Int) {
+                  wv.requestFocus()
+                  runJs("R.catScroll('box')") { _ ->
+                      h.postDelayed({
+                          runJs("R.catRect('box')") { r1 ->
+                              tapFrom(r1)
+                              h.postDelayed({
+                                  runJs("R.catScroll('opt')") { _ ->
+                                      h.postDelayed({
+                                          runJs("R.catRect('opt')") { r2 ->
+                                              tapFrom(r2)
+                                              h.postDelayed({
+                                                  runJs("R.catSynth()") { _ ->
+                                                      h.postDelayed({
+                                                          busy = false
+                                                          log("  category: Entertainment (selected once)")
+                                                      }, 1200)
+                                                  }
+                                              }, 1500)
+                                          }
+                                      }, 600)
+                                  }
+                              }, 1000)
+                          }
+                      }, 600)
+                  }
+              }
+
               private fun debugDump() {
                   runJs("R.dump()") { r ->
-                      val txt = try { JSONObject(r ?: "{}").toString(2) } catch (e: Exception) { r ?: "(no data)" }
+                                        val txt = try { JSONObject(r ?: "{}").toString(2) } catch (e: Exception) { r ?: "(no data)" }
                       log("--- DEBUG ---\n$txt\n--- copied to clipboard ---")
                       val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                       cm.setPrimaryClip(ClipData.newPlainText("rumble-debug", txt))
@@ -781,6 +1090,14 @@ jobs:
                           lastTap = 0
                           catLogged = false
                           stage2Logged = false
+                          lastCatTap = 0
+                          s1Taps = 0
+                          catRounds = 0
+                          catWaitLogged = false
+                          s2Taps = 0
+                          s2First = 0
+                          lastS2Tap = 0
+                          disLogged = false
                           wv.loadUrl(UPLOAD_URL)
                           state = S.LOADING
                           since = now
@@ -838,9 +1155,9 @@ jobs:
                           busy = true
                           val title = cleanTitle(v!!.name.substringBeforeLast('.'))
                           runJs("R.tickForm(" + JSONObject.quote(title) + ")") { r ->
-                              busy = false
                               val t = SystemClock.elapsedRealtime()
                               val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
+                              var needCatTap = false
                               if (!o.optBoolean("title")) {
                                   stable = 0
                                   if (t - lastTitleSeen > 120000) fail("Details form disappeared")
@@ -858,13 +1175,16 @@ jobs:
                                           lastPctLog = t
                                           log("  uploading " + o.optString("pct"))
                                       }
-                                      if (cat == "ok" && !catLogged) { catLogged = true; log("  category: Entertainment (confirmed)") }
+                                      if (catRounds == 0) {
+                                          needCatTap = true
+                                      }
                                       if (!up && ready) stable++ else stable = 0
                                       if (stable >= 4 && t - since > 15000) {
                                           if (unl != "ok") {
                                               stopRun("Ready to submit, but I could not confirm 'Unlisted' is selected, so I did NOT submit. Tap Debug and send me the text.")
+                                          } else if (catRounds == 0) {
+                                              // category step has not run yet - let it run first
                                           } else {
-                                              if (cat != "ok" && !catLogged) { catLogged = true; log("  category: Entertainment (typed, not confirmed - proceeding anyway)") }
                                               state = S.SUBMITTING
                                           }
                                       } else if (t - since > 6 * 3600 * 1000L) {
@@ -872,17 +1192,32 @@ jobs:
                                       }
                                   }
                               }
+                              if (needCatTap && state == S.UPLOADING) {
+                                  catRounds++
+                                  catSequence(catRounds)
+                              } else {
+                                  busy = false
+                              }
                           }
                       }
                       S.SUBMITTING -> {
                           busy = true
-                          runJs("R.clickSubmit()") { r ->
+                          runJs("R.submitRect()") { r ->
                               busy = false
-                              if (r == "1") {
-                                  urlAtSubmit = wv.url
-                                  state = S.CONFIRMING
-                                  since = SystemClock.elapsedRealtime()
-                                  log("  submitted")
+                              if (r != null && r != "0") {
+                                  try {
+                                      val o = JSONObject(r)
+                                      val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                      tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                      s1Taps++
+                                      urlAtSubmit = wv.url
+                                      state = S.CONFIRMING
+                                      since = SystemClock.elapsedRealtime()
+                                      log("  submitted (real tap " + s1Taps + ")")
+                                  } catch (e: Exception) {
+                                      stable = 0
+                                      state = S.UPLOADING
+                                  }
                               } else {
                                   stable = 0
                                   state = S.UPLOADING
@@ -891,18 +1226,36 @@ jobs:
                       }
                       S.CONFIRMING -> {
                           busy = true
-                          runJs("R.confirm()") { r ->
+                          runJs("R.s2()") { r ->
                               busy = false
                               val t = SystemClock.elapsedRealtime()
                               val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
-                              val changed = (wv.url ?: "") != (urlAtSubmit ?: "")
-                              if (o.optBoolean("clicked") && !stage2Logged) {
-                                  stage2Logged = true
-                                  log("  confirmed rights/terms and submitted final step")
-                              }
-                              if (o.optBoolean("gone") || o.optBoolean("ok") || changed) {
+                              val curUrl = wv.url ?: ""
+                              val left = !curUrl.contains("upload", true)
+                              val changed = curUrl != (urlAtSubmit ?: "")
+                              val s2vis = o.optBoolean("vis")
+                              val titleVis = o.optBoolean("title")
+                              if (s2vis && s2First == 0L) s2First = t
+                              if (left || (s2Taps > 0 && (changed || o.optBoolean("ok")))) {
                                   markDone("")
-                              } else if (t - since > 90000) {
+                              } else if (s2Taps > 0 && !s2vis && !titleVis) {
+                                  markDone("")
+                              } else if (s2vis) {
+                                  if (!stage2Logged) { stage2Logged = true; log("  final page: Personal Use + rights/terms") }
+                                  if (o.optBoolean("disabled")) {
+                                      if (!disLogged) { disLogged = true; log("  final Submit is greyed out, waiting...") }
+                                  } else if (s2Taps >= 6) {
+                                      fail("Final Submit did not respond to 6 taps. Tap Debug and send me the text")
+                                  } else if (t - s2First > 3000 && t - lastS2Tap > 5000 && o.has("x")) {
+                                      val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                      tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                      s2Taps++
+                                      lastS2Tap = t
+                                      log("  tapped final Submit (" + s2Taps + ")")
+                                  }
+                              } else if (titleVis && t - since > 8000 && s1Taps < 4) {
+                                  state = S.SUBMITTING
+                              } else if (t - since > 120000) {
                                   markDone(" (could not confirm - please check Rumble)")
                               }
                           }
@@ -979,4 +1332,5 @@ jobs:
           tag_name: latest
           name: Latest APK
           files: app/build/outputs/apk/debug/app-debug.apk
+
 
