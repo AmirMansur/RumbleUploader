@@ -1,0 +1,2750 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Write project files
+        run: |
+          mkdir -p app/src/main/java/com/rbu/uploader app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle.kts <<'RBU_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "RumbleUploader"
+          include(":app")
+          RBU_EOF
+          cat > build.gradle.kts <<'RBU_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          RBU_EOF
+          cat > gradle.properties <<'RBU_EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          RBU_EOF
+          cat > app/build.gradle.kts <<'RBU_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.rbu.uploader"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.rbu.uploader"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/AndroidManifest.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <application
+                  android:label="Rumble Batch Uploader"
+                  android:allowBackup="false"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:theme="@style/RbuTheme"
+                      android:launchMode="singleTask"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <activity
+                      android:name=".DownloadActivity"
+                      android:exported="false"
+                      android:screenOrientation="portrait" />
+                  <service
+                      android:name=".RbuService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+                  <service
+                      android:name=".WatchdogService"
+                      android:exported="true"
+                      android:label="Rumble Uploader watchdog"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/watchdog_config" />
+                  </service>
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+                  <receiver
+                      android:name=".ControlReceiver"
+                      android:exported="false" />
+              </application>
+          </manifest>
+          RBU_EOF
+          cat > app/src/main/res/values/styles.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="RbuTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowAnimationStyle">@null</item>
+              </style>
+          </resources>
+          RBU_EOF
+          cat > app/src/main/res/values/strings.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="watchdog_desc">Each time you open an app, checks that the Rumble uploader is still running and brings it back if it was closed. It does not read your screen.</string>
+          </resources>
+          RBU_EOF
+          cat > app/src/main/res/xml/watchdog_config.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="300"
+              android:description="@string/watchdog_desc" />
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/MainActivity.kt <<'RBU_EOF'
+          package com.rbu.uploader
+          
+          import android.app.Activity
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.net.Uri
+          import android.net.ConnectivityManager
+          import android.net.Network
+          import android.net.NetworkCapabilities
+          import android.net.NetworkRequest
+          import android.net.wifi.WifiManager
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.Build
+          import android.os.PowerManager
+          import android.os.SystemClock
+          import android.provider.DocumentsContract
+          import android.view.MotionEvent
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.webkit.CookieManager
+          import android.webkit.ValueCallback
+          import android.webkit.WebChromeClient
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.graphics.PixelFormat
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.FrameLayout
+          import org.json.JSONObject
+          import org.json.JSONTokener
+          
+          class MainActivity : Activity() {
+          
+              companion object {
+                  const val UPLOAD_URL = "https://rumble.com/upload.php"
+                  const val REQ_TREE = 11
+                  const val REQ_NOTIF = 22
+                  const val REQ_ZIP = 33
+                  @Volatile var instance: MainActivity? = null
+                  @Volatile var isRunning = false
+                  @Volatile var lastBeat = 0L
+                  const val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                  const val HELPER = """(function(){
+          if(window.__rbu)return;
+          var R={};
+          R.vis=function(e){return !!e&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);};
+          R.txt=function(e){return ((e.innerText||e.value||e.textContent||'')+'').replace(/\s+/g,' ').trim();};
+          R.inNav=function(e){return !!e.closest('header,nav,[role=navigation],footer');};
+          // Rumble's floating "Help" button sits in the bottom-right corner and steals taps. Hide it.
+          R.killHelp=function(){
+            try{
+              var W=window.innerWidth,H=window.innerHeight,n=0;
+              var pts=[[W-50,H-45],[W-120,H-45],[W-50,H-90],[W-90,H-70]];
+              for(var p=0;p<pts.length;p++){
+                var st=document.elementsFromPoint(pts[p][0],pts[p][1])||[];
+                for(var i=0;i<st.length;i++){
+                  var f=null;
+                  for(var a=st[i];a&&a!==document.body&&a!==document.documentElement;a=a.parentElement){
+                    if(getComputedStyle(a).position==='fixed')f=a;
+                  }
+                  if(f&&f.tagName!=='HEADER'&&!f.closest('header,nav')){
+                    f.style.setProperty('display','none','important');
+                    n++;
+                  }
+                }
+              }
+              return n;
+            }catch(x){return -1;}
+          };
+          // true when something fixed on screen (like a help bubble) covers the point instead of the wanted element
+          R.blocked=function(e,x,y){
+            try{
+              var t=document.elementFromPoint(x,y);
+              if(!t)return false;
+              if(t===e||e.contains(t)||t.contains(e))return false;
+              if(t.tagName==='IFRAME')return true;
+              for(var n=t;n&&n!==document.body;n=n.parentElement){
+                if(getComputedStyle(n).position==='fixed')return true;
+              }
+              return false;
+            }catch(z){return false;}
+          };
+          // scroll the element to the middle at once (no smooth scrolling), then return a tap point
+          // only if that point really reaches the element
+          R.safe=function(e,extra){
+            R.killHelp();
+            e.scrollIntoView({block:'center',behavior:'instant'});
+            var r=e.getBoundingClientRect();
+            if(r.width<2||r.height<2)return null;
+            var x=r.left+r.width/2,y=r.top+r.height/2;
+            if(R.blocked(e,x,y)){
+              R.killHelp();
+              r=e.getBoundingClientRect();
+              x=r.left+r.width/2;y=r.top+r.height/2;
+              if(R.blocked(e,x,y))return null;
+            }
+            var o={x:x,y:y,iw:window.innerWidth};
+            if(extra){for(var k in extra)o[k]=extra[k];}
+            return o;
+          };
+          R.setVal=function(el,v){
+            var p=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(p,'value').set.call(el,v);
+            el.dispatchEvent(new Event('input',{bubbles:true}));
+            el.dispatchEvent(new Event('change',{bubbles:true}));
+          };
+          R.titleEl=function(){
+            var q=document.querySelectorAll('input[name=title],input#title,textarea[name=title],input[placeholder*="itle" i],input[aria-label*="itle" i],textarea[placeholder*="itle" i]');
+            for(var i=0;i<q.length;i++){ if(R.vis(q[i])&&!R.inNav(q[i]))return q[i]; }
+            return null;
+          };
+          R.hasTitle=function(){return R.titleEl()?'1':'0';};
+          R.catBox=function(){return document.querySelector('input[name="primary-category"]');};
+          R.category=function(){
+            var hp=document.querySelector('input[name=category_primary]');
+            var box=R.catBox();
+            if(!hp)return 'none';
+            if(hp.value==='15'){
+            try{ if(box&&document.activeElement===box)box.blur(); }catch(e){}
+            return 'ok';
+          }
+            return 'none';
+          };
+          R.findOpt=function(){
+            var cands=document.querySelectorAll('li,div,span,a,p,td,[role=option],[role=listitem],button,label');
+            var best=null;
+            for(var i=0;i<cands.length;i++){
+              var e=cands[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              if(/^entertainment$/i.test(R.txt(e))){
+                if(!best||e.innerHTML.length<best.innerHTML.length)best=e;
+              }
+            }
+            return best;
+          };
+          R.rectOf=function(e,kind){
+            var o=R.safe(e,{kind:kind});
+            return o?JSON.stringify(o):'0';
+          };
+          R.synth=function(e){
+            var ms=['pointerdown','mousedown','pointerup','mouseup','click'];
+            for(var i=0;i<ms.length;i++){
+              try{e.dispatchEvent(new MouseEvent(ms[i],{bubbles:true,cancelable:true,view:window}));}catch(x){}
+            }
+            try{if(window.jQuery){window.jQuery(e).trigger('mousedown').trigger('mouseup').trigger('click');}}catch(x){}
+          };
+          R.catOptEl=function(){return document.querySelector('.select-option[data-value="15"]');};
+          R.catScroll=function(k){
+            var e=(k==='box')?R.catBox():R.catOptEl();
+            if(!e)return '0';
+            if(k==='box'||R.vis(e))e.scrollIntoView({block:'center',behavior:'instant'});
+            return '1';
+          };
+          R.catRect=function(k){
+            var e;
+            if(k==='box'){
+              var o=R.catOptEl();
+              if(o&&R.vis(o))return 'open';
+              e=R.catBox();
+            }else{
+              e=R.catOptEl();
+            }
+            if(!e||!R.vis(e))return '0';
+            var o=R.safe(e,null);
+            return o?JSON.stringify(o):'0';
+          };
+          R.catSynth=function(){
+            var e=R.catOptEl();
+            if(!e)return 'noopt';
+            R.synth(e);
+            return 'synth';
+          };
+          R.agree=function(){
+            var n=0;
+            var c=document.querySelectorAll('input[type=checkbox]');
+            for(var i=0;i<c.length;i++){
+              var e=c[i];
+              var l=e.closest('label');
+              var t=((l?l.innerText:'')+' '+(e.parentElement?e.parentElement.innerText:'')).toLowerCase();
+              if(/rights|terms|agree|i own|copyright/.test(t)&&!/monetiz|comment|subscri|notif|adult|mature|nsfw|embed|download|discover/.test(t)){
+                if(!e.checked){e.click();}
+                if(e.checked)n++;
+              }
+            }
+            return n;
+          };
+          R.unlisted=function(){
+            var r=document.querySelectorAll('input[type=radio]');
+            for(var i=0;i<r.length;i++){
+              var e=r[i];
+              var l=e.closest('label');
+              var lf=e.id?document.querySelector('label[for="'+e.id+'"]'):null;
+              var lt=((l?l.innerText:'')+' '+(lf?lf.innerText:'')+' '+(e.getAttribute('aria-label')||'')).trim();
+              if(/unlisted/i.test(e.value||'')||/^\s*unlisted/i.test(lt)){
+                if(!e.checked){e.click();}
+                return e.checked?'ok':'unverified';
+              }
+            }
+            var s=document.querySelectorAll('select');
+            for(var a=0;a<s.length;a++){
+              var o=s[a].options;
+              for(var b=0;b<o.length;b++){
+                if(/unlisted/i.test(o[b].text)){
+                  if(s[a].selectedIndex!==b){s[a].selectedIndex=b;s[a].dispatchEvent(new Event('change',{bubbles:true}));}
+                  return s[a].selectedIndex===b?'ok':'unverified';
+                }
+              }
+            }
+            var els=document.querySelectorAll('label,button,li,div,span,a,[role=radio],[role=option]');
+            var best=null;
+            for(var k=0;k<els.length;k++){
+              var x=els[k];
+              if(!R.vis(x)||R.inNav(x))continue;
+              var tx=R.txt(x).toLowerCase();
+              if(tx.indexOf('unlisted')===0&&tx.length<60){
+                if(!best||R.txt(x).length<R.txt(best).length)best=x;
+              }
+            }
+            if(best){
+              var cl=best.classList;
+              var sel=best.getAttribute('aria-checked')==='true'||best.getAttribute('aria-selected')==='true'||cl.contains('active')||cl.contains('selected')||cl.contains('checked');
+              if(sel)return 'ok';
+              best.click();
+              return 'unverified';
+            }
+            return 'none';
+          };
+          R.submitBtn=function(){
+            var names=['upload','publish','submit','save','post','done','finish','upload video','publish video','save changes'];
+            var c=document.querySelectorAll('button,input[type=submit],input[type=button],[role=button]');
+            var found=null;
+            for(var i=0;i<c.length;i++){
+              var e=c[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              var t=R.txt(e).toLowerCase();
+              if(names.indexOf(t)>=0)found=e;
+            }
+            return found;
+          };
+          R.tickForm=function(t){
+            var o={title:false};
+            var e=R.titleEl();
+            if(e){ if(e.value!==t)R.setVal(e,t); o.title=(e.value===t); }
+            o.unl=R.unlisted();
+            o.cat=R.category();
+            o.agree=R.agree();
+            var up=false,pct='';
+            var ps=document.querySelectorAll('progress');
+            for(var i=0;i<ps.length;i++){ if(R.vis(ps[i])&&ps[i].max&&ps[i].value<ps[i].max){up=true;} }
+            var txt=document.body.innerText||'';
+            var m=txt.match(/\b\d{1,3}(?:\.\d+)?\s?%/g)||[];
+            for(var j=0;j<m.length;j++){ if(parseFloat(m[j])<100){up=true;pct=m[j];} }
+            o.up=up; o.pct=pct;
+            var b=R.submitBtn();
+            o.submit='none';
+            if(b){ o.submit=(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))?'disabled':'ready'; }
+            var er=txt.match(/(upload failed|failed to upload|something went wrong|error occurred)/i);
+            o.err=er?er[0]:'';
+            return JSON.stringify(o);
+          };
+          R.submitRect=function(){
+            var b=R.submitBtn();
+            if(!b||b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'))return '0';
+            var o=R.safe(b,{txt:R.txt(b).slice(0,20)});
+            return o?JSON.stringify(o):'0';
+          };
+          R.stage2Clicked=false;
+          R.licensePicked=false;
+          R.pickLicense=function(){
+            if(R.licensePicked) return false;
+            var els=document.querySelectorAll('div,label,li,span,button,[role=button],[role=radio],a');
+            var best=null;
+            for(var i=0;i<els.length;i++){
+              var e=els[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              var t=R.txt(e);
+              if(/^personal use\b/i.test(t)){
+                if(!best || t.length<R.txt(best).length) best=e;
+              }
+            }
+            if(best){
+              best.click();
+              R.licensePicked=true;
+              return true; // just clicked - let the page settle before trying to submit
+            }
+            return false;
+          };
+                    R.s2Btn=function(){
+            var q=document.querySelectorAll('input[name=submitForm2],button[name=submitForm2],#submitForm2');
+            for(var i=0;i<q.length;i++){ if(R.vis(q[i]))return q[i]; }
+            var c=document.querySelectorAll('button,input[type=button],input[type=submit],[role=button]');
+            for(var k=0;k<c.length;k++){
+              var e=c[k];
+              if(!R.vis(e)||R.inNav(e))continue;
+              if(/^submit$/i.test(R.txt(e)))return e;
+            }
+            return null;
+          };
+          R.s2=function(){
+            var o={vis:false,title:!!R.titleEl(),lic:false,disabled:false};
+            var txt=document.body.innerText||'';
+            o.ok=/successfully (uploaded|published)|has been (uploaded|published)|upload complete|is being processed|processing your video/i.test(txt);
+            var b=R.s2Btn();
+            if(!b)return JSON.stringify(o);
+            o.vis=true;
+            o.lic=R.pickLicense();
+            R.agree();
+            o.disabled=!!(b.disabled||b.getAttribute('aria-disabled')==='true'||b.classList.contains('disabled'));
+            var o2=R.safe(b,null);
+            if(o2){o.x=o2.x;o.y=o2.y;o.iw=o2.iw;}
+            return JSON.stringify(o);
+          };
+          R.pickRect=function(){
+            var re=/(select|choose|browse|pick).{0,20}(video|file)|drag.{0,20}drop|drop.{0,20}here|upload (a )?(video|file)/i;
+            var els=document.querySelectorAll('button,label,a,div,span,[role=button]');
+            var best=null;
+            for(var i=0;i<els.length;i++){
+              var e=els[i];
+              if(!R.vis(e)||R.inNav(e))continue;
+              var tx=R.txt(e);
+              if(tx.length>0&&tx.length<70&&re.test(tx)){
+                if(!best||tx.length<R.txt(best).length)best=e;
+              }
+            }
+            var t=best;
+            if(!t){
+              var fi=document.querySelector('input[type=file]');
+              if(fi){
+                var lb=fi.id?document.querySelector('label[for="'+fi.id+'"]'):null;
+                t=(lb&&R.vis(lb))?lb:(fi.closest('label')||(R.vis(fi)?fi:fi.parentElement));
+              }
+            }
+            if(!t)return '0';
+            var o=R.safe(t,{txt:R.txt(t).slice(0,30)});
+            return o?JSON.stringify(o):'0';
+          };
+          R.dump=function(){
+            var o={url:location.href,title:document.title};
+            function list(sel,onlyVis,f){
+              var a=[];
+              var q=document.querySelectorAll(sel);
+              for(var i=0;i<q.length&&a.length<45;i++){
+                if(onlyVis&&!R.vis(q[i]))continue;
+                a.push(f(q[i]));
+              }
+              return a;
+            }
+            o.fields=list('input,textarea,select',false,function(e){return [e.tagName,e.type,e.name,e.id,e.placeholder,(e.value+'').slice(0,20),R.vis(e)?'vis':'hid',e.checked?'chk':''].join('|');});
+            o.buttons=list('button,[role=button],input[type=submit],label',true,function(e){return R.txt(e).slice(0,40);});
+            o.text=(document.body.innerText||'').replace(/\s+/g,' ').slice(0,700);
+            try{
+              var all=document.querySelectorAll('li,div,span,a,label,td,p');
+              var f=null;
+              for(var q=0;q<all.length;q++){
+                if(/^entertainment$/i.test((all[q].textContent||'').trim())){
+                  if(!f||all[q].outerHTML.length<f.outerHTML.length)f=all[q];
+                }
+              }
+              o.catdbg=f?{vis:R.vis(f),html:f.outerHTML.slice(0,200),parent:(f.parentElement?f.parentElement.outerHTML.slice(0,200):'')}:'no element with exact text Entertainment in DOM';
+              var bx=R.catBox();
+              o.catbox=bx?bx.outerHTML.slice(0,250):'no box';
+            }catch(e){o.catdbg='err '+e;}
+            return JSON.stringify(o);
+          };
+          window.__rbu=R;
+          setInterval(function(){try{R.killHelp();}catch(x){}},700);
+          })();
+          var R=window.__rbu;
+          """
+              }
+          
+              enum class S { IDLE, LOADING, PICKING, UPLOADING, SUBMITTING, CONFIRMING }
+              data class Vid(val id: String, val name: String, val uri: Uri, val zip: Uri? = null, val entry: String? = null, val sourceDownloadKey: String? = null)
+          
+              private lateinit var wv: WebView
+              private lateinit var root: LinearLayout
+              private lateinit var lockLayer: FrameLayout
+              private lateinit var lockLabel: TextView
+              private lateinit var unlockBtn: Button
+              private var floatBtn: Button? = null
+              private var locked = false
+              private var floating = false
+              private var floatBox: FrameLayout? = null
+              private var placeholder: TextView? = null
+              private var floatTaps = 0
+              private var lastFloatTap = 0L
+              private lateinit var logView: TextView
+              private lateinit var logScroll: ScrollView
+              private lateinit var statusView: TextView
+              private lateinit var prefs: SharedPreferences
+              private val h = Handler(Looper.getMainLooper())
+              private var queue: List<Vid> = emptyList()
+              private val failed = HashSet<String>()
+              private var running = false
+              private var busy = false
+              private var state = S.IDLE
+              private var cur: Vid? = null
+              private var since = 0L
+              private var lastTap = 0L
+              private var lastTitleSeen = 0L
+              private var lastPctLog = 0L
+              private var picks = 0
+              private var stable = 0
+              private var catLogged = false
+              private var stage2Logged = false
+              private var lastCatTap = 0L
+              private var s1Taps = 0
+              private var catRounds = 0
+              private var catWaitLogged = false
+              private var s2Taps = 0
+              private var s2First = 0L
+              private var lastS2Tap = 0L
+              private var disLogged = false
+              private var pageLoaded = false
+              private var chooserServed = false
+              private var pendingUri: Uri? = null
+              private var urlAtSubmit: String? = null
+              private var wake: PowerManager.WakeLock? = null
+              private var wifiLock: WifiManager.WifiLock? = null
+              // Upload traffic is process-bound to a Wi-Fi Network. If Wi-Fi disappears,
+              // the upload run is stopped rather than falling back to cellular data.
+              private var uploadWifiCallback: ConnectivityManager.NetworkCallback? = null
+              @Volatile private var uploadWifiReady = false
+              @Volatile private var waitingForUploadWifi = false
+              @Volatile private var uploadWifiNetwork: Network? = null
+              private var autoBoot = false
+              private var zipLoading = false
+              private var wantResume = false
+              private var acct = ""
+              private val lock = Any()
+              @Volatile private var extractDone = true
+              @Volatile private var extractErr: String? = null
+              @Volatile private var extractFile: java.io.File? = null
+              @Volatile private var extractGen = 0
+              private val videoExt = Regex(".*\\.(mp4|mov|mkv|avi|webm|m4v|3gp|flv|wmv|mpg|mpeg|ogv|ts|mts|m2ts|asf)")
+          
+              private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+          
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  instance = this
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  prefs = getSharedPreferences("rbu", Context.MODE_PRIVATE)
+          
+                  root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#111111"))
+          
+                  fun btn(t: String, f: () -> Unit): Button {
+                      val b = Button(this)
+                      b.text = t
+                      b.textSize = 11f
+                      b.isAllCaps = false
+                      b.minHeight = 0
+                      b.minimumHeight = dp(40)
+                      b.setPadding(dp(2), 0, dp(2), 0)
+                      b.setOnClickListener { f() }
+                      return b
+                  }
+                  fun row(vararg bs: Button): LinearLayout {
+                      val r = LinearLayout(this)
+                      r.orientation = LinearLayout.HORIZONTAL
+                      for (b in bs) r.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                      return r
+                  }
+                  root.addView(row(
+                      btn("Select folder") { pickFolder() },
+                      btn("Start") { startRun() },
+                      btn("Stop") { stopRun("Stopped.") }
+                  ))
+                  root.addView(row(
+                      btn("Download from website") {
+                          startActivity(Intent(this, DownloadActivity::class.java))
+                      }
+                  ))
+                  root.addView(row(
+                      btn("Skip video") { skipCurrent() },
+                      btn("Debug") { debugDump() },
+                      btn("Reset progress") { resetProgress() }
+                  ))
+                  floatBtn = btn("Float") { toggleFloat() }
+                  root.addView(row(
+                      btn("Lock") { lockScreen(false) },
+                      btn("Dim") { lockScreen(true) },
+                      floatBtn!!
+                  ))
+                  root.addView(row(
+                      btn("Select ZIP") { pickZip() },
+                      btn("Accounts") { showAccounts() },
+                      btn("Watchdog") { setupWatchdog() }
+                  ))
+          
+                  statusView = TextView(this)
+                  statusView.setTextColor(Color.WHITE)
+                  statusView.textSize = 12f
+                  statusView.setPadding(dp(8), dp(4), dp(8), dp(4))
+                  root.addView(statusView)
+          
+                  wv = WebView(this)
+                  val s = wv.settings
+                  s.javaScriptEnabled = true
+                  s.domStorageEnabled = true
+                  s.allowContentAccess = true
+                  s.allowFileAccess = true
+                  s.mediaPlaybackRequiresUserGesture = false
+                  s.userAgentString = UA
+                  CookieManager.getInstance().setAcceptCookie(true)
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+                  wv.webViewClient = object : WebViewClient() {
+                      override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                          pageLoaded = false
+                      }
+                      override fun onPageFinished(view: WebView?, url: String?) {
+                          pageLoaded = true
+                      }
+                  }
+                  wv.webChromeClient = object : WebChromeClient() {
+                      override fun onShowFileChooser(
+                          webView: WebView?,
+                          filePathCallback: ValueCallback<Array<Uri>>?,
+                          fileChooserParams: FileChooserParams?
+                      ): Boolean {
+                          val u = pendingUri
+                          if (u != null && filePathCallback != null) {
+                              pendingUri = null
+                              chooserServed = true
+                              since = SystemClock.elapsedRealtime()
+                              filePathCallback.onReceiveValue(arrayOf(u))
+                              log("  file handed to Rumble")
+                          } else {
+                              filePathCallback?.onReceiveValue(null)
+                          }
+                          return true
+                      }
+                      override fun onJsBeforeUnload(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm() // auto "Leave this Page" - never block waiting for the user
+                          return true
+                      }
+                      override fun onJsConfirm(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm()
+                          return true
+                      }
+                      override fun onJsAlert(
+                          view: WebView?, url: String?, message: String?,
+                          result: android.webkit.JsResult?
+                      ): Boolean {
+                          result?.confirm()
+                          return true
+                      }
+                  }
+                  root.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
+          
+                  logView = TextView(this)
+                  logView.setTextColor(Color.parseColor("#9fe870"))
+                  logView.textSize = 11f
+                  logView.setPadding(dp(8), dp(4), dp(8), dp(4))
+                  logView.setTextIsSelectable(true)
+                  logScroll = ScrollView(this)
+                  logScroll.addView(logView)
+                  root.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.2f))
+          
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val wc = ViewGroup.LayoutParams.WRAP_CONTENT
+                  val frame = FrameLayout(this)
+                  frame.addView(root, FrameLayout.LayoutParams(mp, mp))
+                  lockLayer = FrameLayout(this)
+                  lockLayer.visibility = View.GONE
+                  lockLayer.isClickable = true
+                  lockLabel = TextView(this)
+                  lockLabel.setTextColor(Color.WHITE)
+                  lockLabel.textSize = 18f
+                  lockLayer.addView(lockLabel, FrameLayout.LayoutParams(wc, wc, Gravity.CENTER))
+                  unlockBtn = Button(this)
+                  unlockBtn.text = "Unlock"
+                  unlockBtn.isAllCaps = false
+                  unlockBtn.setOnClickListener { unlockScreen() }
+                  lockLayer.addView(unlockBtn, FrameLayout.LayoutParams(wc, wc, Gravity.TOP or Gravity.END))
+                  frame.addView(lockLayer, FrameLayout.LayoutParams(mp, mp))
+                  setContentView(frame)
+                  acct = prefs.getString("acct", "") ?: ""
+                  if (acct.isNotEmpty()) {
+                      val ck = prefs.getString("ck_" + acct, null)
+                      if (!ck.isNullOrEmpty()) applyCookies(ck)
+                  }
+                  try { extractDir().deleteRecursively() } catch (e: Exception) { }
+                  wv.loadUrl(UPLOAD_URL)
+                  log("1) Log in to Rumble in the browser above (or tap Accounts to switch).\n2) Tap 'Select folder' or 'Select ZIP' and pick your videos.\n3) Tap 'Start'.\nBy using this app you confirm you own the videos and agree to Rumble's terms.")
+          
+                  wantResume = prefs.getBoolean("run_wanted", false)
+                  handleAuto(intent)
+                  if (autoBoot) h.postDelayed({ if (autoBoot) finishAuto() }, 120000)
+                  val zs = prefs.getStringSet("zips", null)
+                  val saved = prefs.getString("tree", null)
+                  if (zs != null && zs.isNotEmpty()) {
+                      loadZips(zs.map { Uri.parse(it) })
+                  } else if (saved != null) {
+                      try { loadVideos(Uri.parse(saved)) } catch (e: Exception) { log("Please select the folder again.") }
+                      maybeResume()
+                  }
+                  handleDownloadedIntent(intent)
+                  updateStatus()
+              }
+          
+              override fun onNewIntent(intent: Intent?) {
+                  super.onNewIntent(intent)
+                  setIntent(intent)
+                  handleAuto(intent)
+                  handleDownloadedIntent(intent)
+              }
+          
+              override fun onResume() {
+                  super.onResume()
+                  if (!autoBoot) {
+                      if (root.visibility != View.VISIBLE) root.visibility = View.VISIBLE
+                      if (floating) dock(false)
+                  }
+                  updateStatus()
+              }
+          
+              override fun onStop() {
+                  super.onStop()
+                  // leaving the app while a run is active: keep the browser alive in a small side bubble
+                  try { if (running && !floating && !isFinishing && canOverlay()) startFloat(false, false) } catch (e: Exception) { }
+              }
+          
+              override fun onPause() {
+                  super.onPause()
+                  try { if (acct.isNotEmpty()) saveCookiesFor(acct) } catch (e: Exception) { }
+              }
+          
+              override fun onDestroy() {
+                  h.removeCallbacksAndMessages(null)
+                  isRunning = false
+                  if (instance === this) instance = null
+                  releaseWake()
+                  if (floating) { try { dock(false) } catch (e: Exception) { } }
+                  wv.destroy()
+                  super.onDestroy()
+              }
+          
+              // ---------- lock / dim ----------
+              private fun resetBrightness() {
+                  val a = window.attributes
+                  a.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                  window.attributes = a
+              }
+          
+              private fun lockScreen(dim: Boolean) {
+                  locked = true
+                  if (dim) {
+                      lockLayer.setBackgroundColor(Color.BLACK)
+                      lockLabel.text = ""
+                      unlockBtn.setTextColor(Color.parseColor("#777777"))
+                      unlockBtn.setBackgroundColor(Color.parseColor("#151515"))
+                      val a = window.attributes
+                      a.screenBrightness = 0.01f
+                      window.attributes = a
+                  } else {
+                      lockLayer.setBackgroundColor(Color.parseColor("#66000000"))
+                      lockLabel.text = "🔒 Locked"
+                      unlockBtn.setTextColor(Color.WHITE)
+                      unlockBtn.setBackgroundColor(Color.parseColor("#CC333333"))
+                      resetBrightness()
+                  }
+                  lockLayer.visibility = View.VISIBLE
+              }
+          
+              private fun unlockScreen() {
+                  locked = false
+                  lockLayer.visibility = View.GONE
+                  resetBrightness()
+              }
+          
+              override fun onBackPressed() {
+                  if (locked) return
+                  super.onBackPressed()
+              }
+          
+              // ---------- floating window ----------
+              private fun toggleFloat() {
+                  if (floating) dock(false) else startFloat()
+              }
+          
+              private fun makeShield(lp: WindowManager.LayoutParams, wm: WindowManager, box: View): View {
+                  val shield = View(this)
+                  var downX = 0f
+                  var downY = 0f
+                  var startX = 0
+                  var startY = 0
+                  var dragged = false
+                  shield.setOnTouchListener { _, ev ->
+                      when (ev.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              downX = ev.rawX
+                              downY = ev.rawY
+                              startX = lp.x
+                              startY = lp.y
+                              dragged = false
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = ev.rawX - downX
+                                                            val dy = ev.rawY - downY
+                              if (!dragged && (Math.abs(dx) > dp(12) || Math.abs(dy) > dp(12))) dragged = true
+                              if (dragged) {
+                                  lp.x = startX + dx.toInt()
+                                  lp.y = startY + dy.toInt()
+                                  try { wm.updateViewLayout(box, lp) } catch (e: Exception) { }
+                              }
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (!dragged) floatTap() else snapToSide(lp, wm, box)
+                          }
+                      }
+                      true
+                  }
+                  return shield
+              }
+          
+              private fun floatTap() {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastFloatTap > 700) floatTaps = 0
+                  lastFloatTap = now
+                  floatTaps++
+                  if (floatTaps >= 3) {
+                      floatTaps = 0
+                      h.post { dock(true) }
+                  }
+              }
+          
+              private fun startFloat(moveBack: Boolean = true, prompt: Boolean = true) {
+                  if (floating) return
+                  if (!canOverlay()) {
+                      if (prompt) {
+                          log("Allow 'Display over other apps' for this app on the screen that just opened, then tap Float again.")
+                          try {
+                              startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                          } catch (e: Exception) { }
+                      }
+                      return
+                  }
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val dm = resources.displayMetrics
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val idx = root.indexOfChild(wv)
+                  root.removeView(wv)
+                  val ph = TextView(this)
+                  ph.text = "Browser is floating as a small bubble.\nTriple-tap the bubble, or press Dock, to bring it back."
+                  ph.setTextColor(Color.WHITE)
+                  ph.gravity = Gravity.CENTER
+                  root.addView(ph, if (idx < 0) root.childCount else idx, LinearLayout.LayoutParams(mp, 0, 4f))
+                  placeholder = ph
+          
+                  // Bubble is tiny (like a screen-recorder pill), but the real WebView inside it
+                  // is kept at a normal working size and just visually scaled down to fit -
+                  // Android still treats it as a fully live, attached, non-zero-size view.
+                  val bubbleDp = 52
+                  val bubblePx = dp(bubbleDp)
+                  val innerDp = 360
+                  val innerPx = dp(innerDp)
+                  val innerH = dp(640)
+                  val scale = bubblePx.toFloat() / innerPx.toFloat()
+          
+                  val box = FrameLayout(this)
+                  box.clipChildren = true
+                  box.clipToOutline = true
+                  box.background = android.graphics.drawable.GradientDrawable().apply {
+                      shape = android.graphics.drawable.GradientDrawable.OVAL
+                      setColor(Color.parseColor("#9FE870"))
+                      setStroke(dp(2), Color.parseColor("#1b5e20"))
+                  }
+                  box.addView(wv, FrameLayout.LayoutParams(innerPx, innerH))
+                  wv.pivotX = 0f
+                  wv.pivotY = 0f
+                  wv.scaleX = scale
+                  wv.scaleY = scale
+          
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+                  val lp = WindowManager.LayoutParams(
+                      bubblePx, bubblePx,
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+                  val margin = dp(4)
+                  val savedX = prefs.getInt("bx", dm.widthPixels - bubblePx - margin)
+                  lp.x = if (savedX + bubblePx / 2 < dm.widthPixels / 2) margin else dm.widthPixels - bubblePx - margin
+                  lp.y = prefs.getInt("by", (dm.heightPixels * 0.30f).toInt()).coerceIn(dp(40), dm.heightPixels - bubblePx - dp(90))
+                  box.addView(makeShield(lp, wm, box), FrameLayout.LayoutParams(mp, mp))
+                  wm.addView(box, lp)
+                  floatBox = box
+                  floating = true
+                  floatBtn?.text = "Dock"
+                  if (prompt) log("Floating as a small bubble at the side. Drag it to move it; triple-tap it to open the app.")
+                  if (moveBack) h.postDelayed({ moveTaskToBack(true) }, 400)
+              }
+          
+              private fun dock(openApp: Boolean) {
+                  if (!floating) return
+                  if (openApp) {
+                      try {
+                          val i = Intent(this, MainActivity::class.java)
+                          i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { }
+                  }
+                  val box = floatBox
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  try { if (box != null) wm.removeView(box) } catch (e: Exception) { }
+                  try { box?.removeView(wv) } catch (e: Exception) { }
+                  wv.scaleX = 1f
+                  wv.scaleY = 1f
+                  wv.pivotX = (wv.width / 2).toFloat()
+                  wv.pivotY = (wv.height / 2).toFloat()
+                  var idx = root.childCount
+                  val ph = placeholder
+                  if (ph != null) {
+                      idx = root.indexOfChild(ph)
+                      root.removeView(ph)
+                  }
+                  if (idx < 0) idx = root.childCount
+                  if (wv.parent == null) root.addView(wv, idx, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
+                  floatBox = null
+                  placeholder = null
+                  floating = false
+                  floatBtn?.text = "Float"
+              }
+          
+              // ---------- auto-revive / background ----------
+              private fun canOverlay(): Boolean = android.provider.Settings.canDrawOverlays(this)
+          
+              private fun handleAuto(i: Intent?) {
+                  if (i == null || !i.getBooleanExtra("auto", false)) return
+                  autoBoot = true
+                  try { root.visibility = View.INVISIBLE } catch (e: Exception) { }
+                  if (running) {
+                      h.postDelayed({ finishAuto() }, 800)
+                  } else if (queue.isNotEmpty()) {
+                      wantResume = prefs.getBoolean("run_wanted", false)
+                      maybeResume()
+                      if (!running) h.postDelayed({ if (autoBoot && !zipLoading) finishAuto() }, 8000)
+                  }
+              }
+          
+              private fun maybeResume() {
+                  if (wantResume && !running && queue.isNotEmpty()) {
+                      wantResume = false
+                      log("Resuming the run that was interrupted...")
+                      startRun(autoBoot)
+                      if (autoBoot) h.postDelayed({ finishAuto() }, 1500)
+                  }
+              }
+          
+              private fun finishAuto() {
+                  if (!autoBoot) return
+                  autoBoot = false
+                  if (running && canOverlay()) startFloat(true, false) else moveTaskToBack(true)
+              }
+          
+              fun stopFromNotification() {
+                  stopRun("Stopped from the notification.")
+              }
+          
+              private fun snapToSide(lp: WindowManager.LayoutParams, wm: WindowManager, box: View) {
+                  val dm = resources.displayMetrics
+                  val size = lp.width
+                  val margin = dp(4)
+                  lp.x = if (lp.x + size / 2 < dm.widthPixels / 2) margin else dm.widthPixels - size - margin
+                  val minY = dp(40)
+                  val maxY = dm.heightPixels - size - dp(90)
+                  if (lp.y < minY) lp.y = minY
+                  if (lp.y > maxY) lp.y = maxY
+                  try { wm.updateViewLayout(box, lp) } catch (e: Exception) { }
+                  prefs.edit().putInt("bx", lp.x).putInt("by", lp.y).apply()
+              }
+          
+              private fun watchdogOn(): Boolean {
+                  val v = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+                  return v.contains("com.rbu.uploader") && v.contains("WatchdogService")
+              }
+          
+              private fun setupWatchdog() {
+                  val on = watchdogOn()
+                  val msg = if (on) {
+                      "The watchdog is ON.\n\nEvery time you open an app it checks the uploader. If the uploader was killed it comes back by itself, continues with the next video and shows the side bubble again.\n\nTo stop the uploader for real, press Stop (or Stop in the notification)."
+                  } else {
+                      "The watchdog is OFF.\n\n1) Tap 'Open settings'.\n2) Find 'Rumble Batch Uploader' and turn it ON. If the switch is greyed out, tap it once, then go to Settings > Apps > Rumble Batch Uploader > three dots (top right) > 'Allow restricted settings', and try again.\n\nIt only notices which app opens. It does not read your screen."
+                  }
+                  android.app.AlertDialog.Builder(this)
+                      .setTitle("Auto-revive watchdog")
+                      .setMessage(msg)
+                      .setPositiveButton("Open settings") { _, _ ->
+                          try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) { }
+                      }
+                      .setNegativeButton("Close", null)
+                      .show()
+              }
+          
+              // ---------- folder ----------
+              private fun pickFolder() {
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                  i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                  startActivityForResult(i, REQ_TREE)
+              }
+          
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQ_TREE && resultCode == RESULT_OK) {
+                      val u = data?.data ?: return
+                      try {
+                          contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      } catch (e: Exception) { }
+                      prefs.edit().putString("tree", u.toString()).remove("zips").apply()
+                      try { loadVideos(u) } catch (e: Exception) { log("Could not read folder: " + e.message) }
+                      updateStatus()
+                  }
+                  if (requestCode == REQ_ZIP && resultCode == RESULT_OK) {
+                      val list = ArrayList<Uri>()
+                      data?.data?.let { list.add(it) }
+                      val cd = data?.clipData
+                      if (cd != null) { for (k in 0 until cd.itemCount) { cd.getItemAt(k).uri?.let { if (!list.contains(it)) list.add(it) } } }
+                      if (list.isEmpty()) return
+                      for (u in list) {
+                          try { contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: Exception) { }
+                      }
+                      prefs.edit().putStringSet("zips", list.map { it.toString() }.toSet()).remove("tree").apply()
+                      loadZips(list)
+                  }
+              }
+          
+              // ---------- ZIP support ----------
+              private fun pickZip() {
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                  i.addCategory(Intent.CATEGORY_OPENABLE)
+                  i.type = "*/*"
+                  i.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/x-zip", "application/octet-stream"))
+                  i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                  i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                  startActivityForResult(i, REQ_ZIP)
+              }
+          
+              private fun loadZips(uris: List<Uri>, append: Boolean = false, autoStart: Boolean = false, sourceDownloadKey: String? = null) {
+                  log("Reading " + uris.size + " ZIP file(s)... big files can take a minute.")
+                  zipLoading = true
+                  Thread {
+                      val list = ArrayList<Vid>()
+                      var err: String? = null
+                      for (zu in uris) {
+                          try {
+                              val ins = contentResolver.openInputStream(zu) ?: throw Exception("cannot open ZIP")
+                              ins.use { raw ->
+                                  java.util.zip.ZipInputStream(java.io.BufferedInputStream(raw, 1 shl 16)).use { zis ->
+                                      var e = zis.nextEntry
+                                      while (e != null) {
+                                          val en = e.name
+                                          val base = en.substringAfterLast('/')
+                                          if (!e.isDirectory && !en.startsWith("__MACOSX/") && !base.startsWith("._") && base.lowercase().matches(videoExt)) {
+                                              list.add(Vid("zip:" + zu.toString() + "#" + en, base, zu, zu, en, sourceDownloadKey))
+                                          }
+                                          e = zis.nextEntry
+                                      }
+                                  }
+                              }
+                          } catch (ex: Exception) { err = ex.message ?: ex.toString() }
+                      }
+                      runOnUiThread {
+                          queue = (if (append) queue else emptyList()).plus(list).distinctBy { it.id }.sortedWith(natCmp)
+                          if (!append) failed.clear()
+                          if (err != null) log("ZIP problem: " + err)
+                          log("ZIP loaded: " + list.size + " video(s). Total queue: " + queue.size)
+                          zipLoading = false
+                          updateStatus()
+                          if (sourceDownloadKey != null && list.isEmpty()) notifyDownloadPipeline(sourceDownloadKey, "skipped")
+                          if (autoStart && list.isNotEmpty() && !running) startRun(auto = true) else maybeResume()
+                      }
+                  }.start()
+              }
+          
+              private fun extractDir(): java.io.File {
+                  val d = java.io.File(cacheDir, "zipx")
+                  d.mkdirs()
+                  return d
+              }
+          
+              private fun cleanupTemp() {
+                  synchronized(lock) {
+                      extractGen++
+                      val f = extractFile
+                      extractFile = null
+                      extractErr = null
+                      extractDone = true
+                      if (f != null) {
+                          try { f.delete() } catch (e: Exception) { }
+                          try { f.parentFile?.delete() } catch (e: Exception) { }
+                      }
+                  }
+              }
+          
+              private fun startExtract(v: Vid) {
+                  val g = synchronized(lock) {
+                      extractGen++
+                      extractDone = false
+                      extractErr = null
+                      extractFile = null
+                      extractGen
+                  }
+                  Thread {
+                      var dir: java.io.File? = null
+                      var out: java.io.File? = null
+                      var err: String? = null
+                      try {
+                          val zu = v.zip ?: throw Exception("no zip")
+                          val want = v.entry ?: throw Exception("no entry")
+                          val d = java.io.File(extractDir(), "d" + System.currentTimeMillis())
+                          d.mkdirs()
+                          dir = d
+                          val o = java.io.File(d, v.name.replace(Regex("[^A-Za-z0-9._ ()\\[\\]-]"), "_"))
+                          out = o
+                          val ins = contentResolver.openInputStream(zu) ?: throw Exception("cannot open ZIP")
+                          var found = false
+                          ins.use { raw ->
+                              java.util.zip.ZipInputStream(java.io.BufferedInputStream(raw, 1 shl 16)).use { zis ->
+                                  var e = zis.nextEntry
+                                  while (e != null) {
+                                      if (e.name == want) {
+                                          java.io.FileOutputStream(o).use { fo -> zis.copyTo(fo, 1 shl 16) }
+                                          found = true
+                                          break
+                                      }
+                                      e = zis.nextEntry
+                                  }
+                              }
+                          }
+                          if (!found) throw Exception("video not found inside the ZIP")
+                      } catch (ex: Throwable) {
+                          err = ex.message ?: ex.toString()
+                      }
+                      synchronized(lock) {
+                          if (g == extractGen) {
+                              if (err == null) extractFile = out else {
+                                  extractErr = err
+                                  try { out?.delete() } catch (e: Exception) { }
+                                  try { dir?.delete() } catch (e: Exception) { }
+                              }
+                              extractDone = true
+                          } else {
+                              try { out?.delete() } catch (e: Exception) { }
+                              try { dir?.delete() } catch (e: Exception) { }
+                          }
+                      }
+                  }.start()
+              }
+          
+              // ---------- downloaded files hand-off ----------
+              private fun handleDownloadedIntent(i: Intent?) {
+                  if (i == null || !i.hasExtra("rbu_download_uri")) return
+                  val uri = try { Uri.parse(i.getStringExtra("rbu_download_uri") ?: return) } catch (e: Exception) { return }
+                  val id = i.getStringExtra("rbu_download_id") ?: ("download:" + uri.toString())
+                  val name = i.getStringExtra("rbu_download_name") ?: "downloaded-video"
+                  val mime = i.getStringExtra("rbu_download_mime") ?: ""
+                  val downloadKey = i.getStringExtra("rbu_download_key")
+                  i.removeExtra("rbu_download_uri")
+                  acceptDownloadedFile(id, uri, name, mime, downloadKey)
+              }
+
+              fun acceptDownloadedFile(id: String, uri: Uri, name: String, mime: String, downloadKey: String? = null) {
+                  runOnUiThread {
+                      val lower = name.lowercase()
+                      val isZip = lower.endsWith(".zip") || mime.equals("application/zip", true) || mime.equals("application/x-zip-compressed", true)
+                      if (isZip) {
+                          log("Download ready: $name — scanning ZIP contents")
+                          loadZips(listOf(uri), append = true, autoStart = true, sourceDownloadKey = downloadKey)
+                      } else if (mime.startsWith("video/") || lower.matches(videoExt)) {
+                          val stableId = if (id.startsWith("download:")) id else "download:" + id
+                          if (queue.none { it.id == stableId } && !isDone(stableId)) {
+                              queue = (queue + Vid(stableId, name, uri, sourceDownloadKey = downloadKey)).sortedWith(natCmp)
+                              log("Download ready: $name — added to upload queue")
+                          } else {
+                              log("Already queued/completed: $name")
+                          }
+                          updateStatus()
+                          if (!running && queue.any { !isDone(it.id) && !failed.contains(it.id) }) startRun(auto = true)
+                      } else {
+                          if (lower.endsWith(".rar") || lower.endsWith(".7z") || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".tgz")) {
+                              log("Archive detected: $name. This build extracts ZIP files; this archive format is retained but not extracted.")
+                          } else {
+                              log("Downloaded but not uploaded (unsupported/non-video type): $name [$mime]")
+                          }
+                          downloadKey?.let { notifyDownloadPipeline(it, "skipped") }
+                      }
+                  }
+              }
+
+              private fun notifyDownloadPipeline(key: String, result: String) {
+                  sendBroadcast(Intent("com.rbu.uploader.DOWNLOAD_UPLOAD_RESULT")
+                      .setPackage(packageName)
+                      .putExtra("download_key", key)
+                      .putExtra("result", result))
+              }
+
+              // ---------- accounts ----------
+              private fun acctNames(): List<String> =
+                  (prefs.getStringSet("accts", emptySet()) ?: emptySet()).toList().sortedBy { it.lowercase() }
+          
+              private fun snapshotCookies(): String {
+                  val cm = CookieManager.getInstance()
+                  cm.flush()
+                  return cm.getCookie("https://rumble.com") ?: ""
+              }
+          
+              private fun saveCookiesFor(name: String) {
+                  val c = snapshotCookies()
+                  if (c.isNotEmpty()) prefs.edit().putString("ck_" + name, c).apply()
+              }
+          
+              private fun applyCookies(c: String) {
+                  val cm = CookieManager.getInstance()
+                  for (part in c.split(";")) {
+                      val p = part.trim()
+                      if (p.isEmpty() || !p.contains("=")) continue
+                      cm.setCookie("https://rumble.com", p + "; Domain=rumble.com; Path=/; Secure; Max-Age=31536000")
+                  }
+                  cm.flush()
+              }
+          
+              private fun clearSession(after: () -> Unit) {
+                  val cm = CookieManager.getInstance()
+                  cm.removeAllCookies {
+                      try { android.webkit.WebStorage.getInstance().deleteAllData() } catch (e: Exception) { }
+                      cm.flush()
+                      after()
+                  }
+              }
+          
+              private fun showAccounts() {
+                  val names = acctNames()
+                  val items = ArrayList<String>()
+                  for (n in names) items.add((if (n == acct) "(current) " else "") + n)
+                  items.add("+ Save current login...")
+                  items.add("+ Log in to another account")
+                  if (names.isNotEmpty()) items.add("- Remove an account...")
+                  android.app.AlertDialog.Builder(this)
+                      .setTitle("Rumble accounts" + (if (acct.isEmpty()) "" else " (now: $acct)"))
+                      .setItems(items.toTypedArray()) { _, which ->
+                          when {
+                              which < names.size -> switchTo(names[which])
+                              which == names.size -> saveCurrentAs()
+                              which == names.size + 1 -> newLogin()
+                              else -> removeAccount()
+                          }
+                      }
+                      .setNegativeButton("Close", null)
+                      .show()
+              }
+          
+              private fun switchTo(name: String) {
+                  if (running) { log("Stop the run first, then switch accounts."); return }
+                  if (name == acct) { log("Already on account: $name"); return }
+                  val c = prefs.getString("ck_" + name, null)
+                  if (c.isNullOrEmpty()) { log("No saved login for '$name'. Log in, then Accounts > Save current login."); return }
+                  if (acct.isNotEmpty()) saveCookiesFor(acct)
+                  clearSession {
+                      applyCookies(c)
+                      acct = name
+                      prefs.edit().putString("acct", name).apply()
+                      failed.clear()
+                      wv.loadUrl(UPLOAD_URL)
+                      log("Switched to account: $name")
+                      updateStatus()
+                  }
+              }
+          
+              private fun newLogin() {
+                  if (running) { log("Stop the run first, then switch accounts."); return }
+                  if (acct.isNotEmpty()) saveCookiesFor(acct) else log("Note: your current login was not saved, so it will be signed out.")
+                  clearSession {
+                      acct = ""
+                      prefs.edit().putString("acct", "").apply()
+                      failed.clear()
+                      wv.loadUrl(UPLOAD_URL)
+                      log("Signed out of the browser. Log in to the other Rumble account above, then tap Accounts > Save current login.")
+                      updateStatus()
+                  }
+              }
+          
+              private fun saveCurrentAs() {
+                  val c = snapshotCookies()
+                  if (c.isEmpty()) { log("No login found yet. Log in to Rumble first."); return }
+                  val et = android.widget.EditText(this)
+                  et.hint = "Account name (e.g. Main, Shop)"
+                  et.setText(acct)
+                  android.app.AlertDialog.Builder(this)
+                      .setTitle("Save current login as")
+                      .setView(et)
+                      .setPositiveButton("Save") { _, _ ->
+                          val name = et.text.toString().trim().replace(Regex("[^A-Za-z0-9 _.-]"), "")
+                          if (name.isEmpty()) {
+                              log("Name can't be empty.")
+                          } else {
+                              val names = HashSet<String>(prefs.getStringSet("accts", emptySet()) ?: emptySet())
+                              names.add(name)
+                              val ed = prefs.edit()
+                              ed.putStringSet("accts", names)
+                              ed.putString("ck_" + name, c)
+                              if (acct.isEmpty()) {
+                                  val d = prefs.getStringSet("done", null)
+                                  if (d != null && !prefs.contains("done_" + name)) ed.putStringSet("done_" + name, HashSet<String>(d))
+                                  ed.remove("done")
+                              }
+                              ed.putString("acct", name)
+                              ed.apply()
+                              acct = name
+                              log("Saved login as '$name'.")
+                              updateStatus()
+                          }
+                      }
+                      .setNegativeButton("Cancel", null)
+                      .show()
+              }
+          
+              private fun removeAccount() {
+                  val names = acctNames()
+                  if (names.isEmpty()) return
+                  android.app.AlertDialog.Builder(this)
+                      .setTitle("Remove which account?")
+                      .setItems(names.toTypedArray()) { _, which ->
+                          val n = names[which]
+                          val set = HashSet<String>(prefs.getStringSet("accts", emptySet()) ?: emptySet())
+                          set.remove(n)
+                          prefs.edit().putStringSet("accts", set).remove("ck_" + n).remove("done_" + n).apply()
+                          if (n == acct) { acct = ""; prefs.edit().putString("acct", "").apply() }
+                          log("Removed account '$n' (its saved login and progress).")
+                          updateStatus()
+                      }
+                      .setNegativeButton("Cancel", null)
+                      .show()
+              }
+          
+              private fun cleanTitle(raw: String): String {
+                  var t = raw
+                  // drop (...), {...} and [...] segments, including nested ones
+                  repeat(5) {
+                      t = t.replace(Regex("\\([^()]*\\)"), " ")
+                      t = t.replace(Regex("\\{[^{}]*\\}"), " ")
+                      t = t.replace(Regex("\\[[^\\[\\]]*\\]"), " ")
+                  }
+                  return t.replace(Regex("\\s{2,}"), " ").trim()
+              }
+          
+              private fun natKey(s: String): List<String> =
+                  Regex("\\d+|\\D+").findAll(s.lowercase()).map { it.value }.toList()
+          
+              private val natCmp = Comparator<Vid> { a, b ->
+                  val x = natKey(a.name)
+                  val y = natKey(b.name)
+                  var res = 0
+                  var i = 0
+                  while (res == 0 && i < minOf(x.size, y.size)) {
+                      val p = x[i]
+                      val q = y[i]
+                      res = if (p[0].isDigit() && q[0].isDigit()) p.toBigInteger().compareTo(q.toBigInteger()) else p.compareTo(q)
+                      i++
+                  }
+                  if (res != 0) res else x.size - y.size
+              }
+          
+              private fun loadVideos(tree: Uri) {
+                  val treeId = DocumentsContract.getTreeDocumentId(tree)
+                  val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeId)
+                  val list = ArrayList<Vid>()
+                  val ext = Regex(".*\\.(mp4|mov|mkv|avi|webm|m4v|3gp|flv|wmv|mpg|mpeg|ogv|ts|mts|m2ts|asf)")
+                  val cur = contentResolver.query(
+                      children,
+                      arrayOf(
+                          DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                          DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                          DocumentsContract.Document.COLUMN_MIME_TYPE
+                      ), null, null, null
+                  )
+                  cur?.use {
+                      while (it.moveToNext()) {
+                          val id = it.getString(0)
+                          val name = it.getString(1) ?: continue
+                          val mime = it.getString(2) ?: ""
+                          if (mime.startsWith("video/") || name.lowercase().matches(ext)) {
+                              list.add(Vid(id, name, DocumentsContract.buildDocumentUriUsingTree(tree, id)))
+                          }
+                      }
+                  }
+                  queue = list.sortedWith(natCmp)
+                  failed.clear()
+                  log("Folder loaded: ${queue.size} video(s).")
+              }
+          
+              // ---------- progress ----------
+              private fun doneKey() = if (acct.isEmpty()) "done" else "done_" + acct
+              private fun doneSet(): Set<String> = prefs.getStringSet(doneKey(), emptySet()) ?: emptySet()
+              private fun isDone(id: String) = doneSet().contains(id)
+              private fun doneCount() = queue.count { isDone(it.id) }
+          
+              private fun markDone(note: String) {
+                  val n = HashSet<String>(doneSet())
+                  cur?.let { n.add(it.id) }
+                  prefs.edit().putStringSet(doneKey(), n).apply()
+                  // Notify the download queue only when this direct file or every video in its ZIP is verified.
+                  val completed = cur
+                  if (completed?.sourceDownloadKey != null) {
+                      val key = completed.sourceDownloadKey
+                      if (completed.zip == null) {
+                          val completedKeys = HashSet(prefs.getStringSet("dl_uploaded_keys", emptySet()) ?: emptySet())
+                          completedKeys.add(key)
+                          prefs.edit().putStringSet("dl_uploaded_keys", completedKeys).apply()
+                          notifyDownloadPipeline(key, "uploaded")
+                      } else {
+                          val allEntriesDone = queue.filter { it.zip == completed.zip }.all { n.contains(it.id) }
+                          if (allEntriesDone) {
+                              val completedKeys = HashSet(prefs.getStringSet("dl_uploaded_keys", emptySet()) ?: emptySet())
+                              completedKeys.add(key)
+                              prefs.edit().putStringSet("dl_uploaded_keys", completedKeys).apply()
+                              notifyDownloadPipeline(key, "uploaded")
+                          }
+                      }
+                  }
+                  // Delete app-downloaded source files only after successful verification.
+                  try {
+                      if (completed != null) {
+                          if (completed.zip != null) {
+                              val allEntriesDone = queue.filter { it.zip == completed.zip }.all { n.contains(it.id) }
+                              if (allEntriesDone) contentResolver.delete(completed.zip, null, null)
+                          } else if (completed.id.startsWith("download:")) {
+                              contentResolver.delete(completed.uri, null, null)
+                          }
+                      }
+                  } catch (e: Exception) { log("  cleanup deferred: " + (e.message ?: "permission unavailable")) }
+                  log("  ✔ done$note")
+                  prefs.edit().putInt("revive_n", 0).apply()
+                  state = S.IDLE
+                  updateStatus()
+              }
+
+              private fun resetProgress() {
+                  prefs.edit().remove(doneKey()).apply()
+                  failed.clear()
+                  log("Progress reset: all videos will be uploaded again.")
+                  updateStatus()
+              }
+          
+              private fun updateStatus() {
+                  statusView.text = "Videos: ${queue.size}  •  done: ${doneCount()}  •  " + (if (running) "RUNNING" else "stopped") + (if (acct.isEmpty()) "" else "  •  " + acct) + "  •  watchdog " + (if (watchdogOn()) "ON" else "OFF")
+                  notifyProgress()
+              }
+          
+              private fun notifyProgress() {
+                  if (!running) return
+                  val n = queue.size
+                  val d = doneCount()
+                  val name = cur?.name ?: ""
+                  Notifier.update(applicationContext, "Uploading " + minOf(d + 1, n) + "/" + n + (if (name.isNotEmpty()) " - " + name else ""))
+              }
+          
+              private fun log(m: String) {
+                  logView.append(m + "\n")
+                  if (logView.length() > 30000) logView.text = logView.text.toString().takeLast(20000)
+                  logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+              }
+          
+              // ---------- network separation: cellular downloads / Wi-Fi uploads ----------
+              private fun requestWiFiForUpload(auto: Boolean) {
+                  if (waitingForUploadWifi) {
+                      log("Waiting for Wi-Fi. Uploads will not use mobile data.")
+                      return
+                  }
+                  val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                  waitingForUploadWifi = true
+                  uploadWifiReady = false
+                  log("Waiting for Wi-Fi before uploading. Mobile data will not be used for Rumble uploads.")
+                  val request = NetworkRequest.Builder()
+                      .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                      .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                      .build()
+                  val callback = object : ConnectivityManager.NetworkCallback() {
+                      override fun onAvailable(network: Network) {
+                          try {
+                              val bound = if (Build.VERSION.SDK_INT >= 23) cm.bindProcessToNetwork(network) else false
+                              runOnUiThread {
+                                  uploadWifiNetwork = network
+                                  uploadWifiReady = bound
+                                  waitingForUploadWifi = false
+                                  if (bound) {
+                                      log("Wi-Fi connected. Rumble uploads are restricted to Wi-Fi.")
+                                      startRun(auto)
+                                  } else {
+                                      log("Could not bind uploads to Wi-Fi. Upload has not started.")
+                                      releaseUploadNetwork()
+                                  }
+                              }
+                          } catch (e: Exception) {
+                              runOnUiThread {
+                                  waitingForUploadWifi = false
+                                  uploadWifiReady = false
+                                  log("Wi-Fi setup failed: ${e.message}. Upload has not started.")
+                                  releaseUploadNetwork()
+                              }
+                          }
+                      }
+          
+                      override fun onLost(network: Network) {
+                          if (network == uploadWifiNetwork) {
+                              runOnUiThread {
+                                  uploadWifiReady = false
+                                  uploadWifiNetwork = null
+                                  if (running) stopRun("Wi-Fi disconnected. Upload stopped; it will not switch to mobile data. Reconnect Wi-Fi and press Start to retry.")
+                              }
+                          }
+                      }
+          
+                      override fun onUnavailable() {
+                          runOnUiThread {
+                              waitingForUploadWifi = false
+                              uploadWifiReady = false
+                              log("No Wi-Fi network is available. Upload queue is waiting; mobile data will not be used.")
+                              releaseUploadNetwork()
+                          }
+                      }
+                  }
+                  uploadWifiCallback = callback
+                  try {
+                      if (Build.VERSION.SDK_INT >= 26) cm.requestNetwork(request, callback, 60_000)
+                      else cm.requestNetwork(request, callback)
+                  } catch (e: Exception) {
+                      waitingForUploadWifi = false
+                      uploadWifiReady = false
+                      log("Could not request Wi-Fi: ${e.message}")
+                      releaseUploadNetwork()
+                  }
+              }
+          
+              private fun releaseUploadNetwork() {
+                  val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                  try { uploadWifiCallback?.let { cm.unregisterNetworkCallback(it) } } catch (_: Exception) { }
+                  uploadWifiCallback = null
+                  try { if (Build.VERSION.SDK_INT >= 23) cm.bindProcessToNetwork(null) } catch (_: Exception) { }
+                  uploadWifiReady = false
+                  waitingForUploadWifi = false
+                  uploadWifiNetwork = null
+              }
+          
+              // ---------- run control ----------
+              private fun startRun(auto: Boolean = false) {
+                  if (running) return
+                  if (queue.isEmpty()) { log("Select a folder or ZIP with videos first."); return }
+                  // Never start the Rumble WebView uploader until an actual Wi-Fi network
+                  // is available and bound to this app process. No cellular fallback.
+                  if (!uploadWifiReady) {
+                      requestWiFiForUpload(auto)
+                      return
+                  }
+                  if (!auto) {
+                      if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                          requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
+                      }
+                      try {
+                          val pmc = getSystemService(Context.POWER_SERVICE) as PowerManager
+                          if (!pmc.isIgnoringBatteryOptimizations(packageName)) {
+                              val i = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                              i.data = Uri.parse("package:$packageName")
+                              startActivity(i)
+                              log("Allow 'unrestricted battery use' on the screen that just opened, then tap Start again.")
+                              return
+                          }
+                      } catch (e: Exception) { }
+                      prefs.edit().putInt("revive_n", 0).apply()
+                  }
+                  running = true
+                  isRunning = true
+                  lastBeat = SystemClock.elapsedRealtime()
+                  busy = false
+                  state = S.IDLE
+                  prefs.edit().putBoolean("run_wanted", true).apply()
+                  Notifier.cancelResume(applicationContext)
+                  try {
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:run")
+                      wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+                  try {
+                      val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                      val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                      val wl = wm.createWifiLock(mode, "rbu:wifi")
+                      wl.setReferenceCounted(false)
+                      wl.acquire()
+                      wifiLock = wl
+                  } catch (e: Exception) { }
+                  try {
+                      val svc = Intent(this, RbuService::class.java)
+                      if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+                  } catch (e: Exception) { }
+                  if (!auto && !canOverlay()) log("Tip: tap Float once and allow 'Display over other apps', so the uploader keeps a small bubble while you use other apps.")
+                  updateStatus()
+                  h.post(ticker)
+              }
+          
+              private fun stopRun(msg: String) {
+                  running = false
+                  isRunning = false
+                  busy = false
+                  prefs.edit().putBoolean("run_wanted", false).apply()
+                  cleanupTemp()
+                  releaseWake()
+                  releaseUploadNetwork()
+                  try { stopService(Intent(this, RbuService::class.java)) } catch (e: Exception) { }
+                  log(msg)
+                  updateStatus()
+              }
+          
+              private fun releaseWake() {
+                  try { if (wake?.isHeld == true) wake?.release() } catch (e: Exception) { }
+                  try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (e: Exception) { }
+                  wifiLock = null
+              }
+          
+              private fun skipCurrent() {
+                  cur?.let { failed.add(it.id) }
+                  pendingUri = null
+                  busy = false
+                  state = S.IDLE
+                  log("Skipped current video.")
+              }
+          
+              private fun fail(msg: String) {
+                  log("  ✖ $msg — skipped")
+                  cur?.let { failed.add(it.id) }
+                  state = S.IDLE
+                  updateStatus()
+              }
+          
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      if (!running) return
+                      lastBeat = SystemClock.elapsedRealtime()
+                      try { tick() } catch (e: Exception) { busy = false; log("Error: " + e) }
+                      h.postDelayed(this, 1500)
+                  }
+              }
+          
+              // ---------- JS bridge ----------
+              private fun unwrap(r: String?): String? {
+                  if (r == null || r == "null") return null
+                  return try { (JSONTokener(r).nextValue() as? String) ?: r } catch (e: Exception) { r }
+              }
+          
+              private fun runJs(code: String, cb: (String?) -> Unit) {
+                  wv.evaluateJavascript(HELPER + "\n" + code) { r -> cb(unwrap(r)) }
+              }
+          
+              private fun tap(x: Float, y: Float) {
+                  val t = SystemClock.uptimeMillis()
+                  val d = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0)
+                  wv.dispatchTouchEvent(d)
+                  d.recycle()
+                  h.postDelayed({
+                      val t2 = SystemClock.uptimeMillis()
+                      val u = MotionEvent.obtain(t, t2, MotionEvent.ACTION_UP, x, y, 0)
+                      wv.dispatchTouchEvent(u)
+                      u.recycle()
+                  }, 90)
+              }
+          
+              private fun tapFrom(r: String?) {
+                  if (r == null || !r.startsWith("{")) return
+                  try {
+                      val po = JSONObject(r)
+                      val sc = wv.width.toFloat() / po.getDouble("iw").toFloat()
+                      tap(po.getDouble("x").toFloat() * sc, po.getDouble("y").toFloat() * sc)
+                  } catch (e: Exception) { }
+              }
+          
+              // One-shot category selection: open box, tap option, then (if needed) synthetic click. No looping.
+              private fun catSequence(round: Int) {
+                  wv.requestFocus()
+                  runJs("R.catScroll('box')") { _ ->
+                      h.postDelayed({
+                          runJs("R.catRect('box')") { r1 ->
+                              tapFrom(r1)
+                              h.postDelayed({
+                                  runJs("R.catScroll('opt')") { _ ->
+                                      h.postDelayed({
+                                          runJs("R.catRect('opt')") { r2 ->
+                                              tapFrom(r2)
+                                              h.postDelayed({
+                                                  runJs("R.catSynth()") { _ ->
+                                                      h.postDelayed({
+                                                          busy = false
+                                                          log("  category: Entertainment (selected once)")
+                                                      }, 1200)
+                                                  }
+                                              }, 1500)
+                                          }
+                                      }, 600)
+                                  }
+                              }, 1000)
+                          }
+                      }, 600)
+                  }
+              }
+          
+              private fun debugDump() {
+                  runJs("R.dump()") { r ->
+                                        val txt = try { JSONObject(r ?: "{}").toString(2) } catch (e: Exception) { r ?: "(no data)" }
+                      log("--- DEBUG ---\n$txt\n--- copied to clipboard ---")
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("rumble-debug", txt))
+                  }
+              }
+          
+              // ---------- main state machine ----------
+              private fun tick() {
+                  if (busy) return
+                  val now = SystemClock.elapsedRealtime()
+                  val v = cur
+                  when (state) {
+                      S.IDLE -> {
+                          val next = queue.firstOrNull { !isDone(it.id) && !failed.contains(it.id) }
+                          if (next == null) {
+                              stopRun("Finished. Done: ${doneCount()}/${queue.size}, skipped: ${failed.size}")
+                              return
+                          }
+                          cur = next
+                          cleanupTemp()
+                          log("▶ ${next.name}")
+                          notifyProgress()
+                          if (next.zip != null) { startExtract(next); log("  extracting from ZIP...") }
+                          pageLoaded = false
+                          chooserServed = false
+                          pendingUri = null
+                          picks = 0
+                          stable = 0
+                          lastTap = 0
+                          catLogged = false
+                          stage2Logged = false
+                          lastCatTap = 0
+                          s1Taps = 0
+                          catRounds = 0
+                          catWaitLogged = false
+                          s2Taps = 0
+                          s2First = 0
+                          lastS2Tap = 0
+                          disLogged = false
+                          wv.loadUrl(UPLOAD_URL)
+                          state = S.LOADING
+                          since = now
+                      }
+                      S.LOADING -> {
+                          if (pageLoaded && extractDone) {
+                              val u = wv.url ?: ""
+                              if (u.contains("login", true) || u.contains("signin", true)) {
+                                  stopRun("Please log in to Rumble in the browser above, then press Start again.")
+                                  return
+                              }
+                              if (v!!.zip != null) {
+                                  val ef = extractFile
+                                  if (ef == null) {
+                                      fail("Could not extract from ZIP: " + (extractErr ?: "unknown error"))
+                                      return
+                                  }
+                                  pendingUri = Uri.fromFile(ef)
+                              } else {
+                                  pendingUri = v.uri
+                              }
+                              state = S.PICKING
+                              since = now
+                          } else if (!pageLoaded && now - since > 60000) {
+                              fail("Page did not load")
+                          }
+                      }
+                      S.PICKING -> {
+                          busy = true
+                          runJs("R.hasTitle()") { r ->
+                              busy = false
+                              val t = SystemClock.elapsedRealtime()
+                              if (chooserServed) {
+                                  if (r == "1") {
+                                      state = S.UPLOADING
+                                      since = t
+                                      lastTitleSeen = t
+                                      stable = 0
+                                      log("  uploading…")
+                                  } else if (t - since > 120000) {
+                                      fail("Rumble did not show the details form")
+                                  }
+                              } else if (t - lastTap > 4000) {
+                                  lastTap = t
+                                  picks++
+                                  if (picks > 10) {
+                                      stopRun("Could not find the 'select video' button. Tap Debug and send me the text.")
+                                  } else {
+                                      busy = true
+                                      runJs("R.pickRect()") { r2 ->
+                                          busy = false
+                                          if (r2 != null && r2 != "0") {
+                                              val o = JSONObject(r2)
+                                              val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                              tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                              log("  tapped: " + o.optString("txt"))
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      S.UPLOADING -> {
+                          busy = true
+                          val title = cleanTitle(v!!.name.substringBeforeLast('.'))
+                          runJs("R.tickForm(" + JSONObject.quote(title) + ")") { r ->
+                              val t = SystemClock.elapsedRealtime()
+                              val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
+                              var needCatTap = false
+                              if (!o.optBoolean("title")) {
+                                  stable = 0
+                                  if (t - lastTitleSeen > 120000) fail("Details form disappeared")
+                              } else {
+                                  lastTitleSeen = t
+                                  val unl = o.optString("unl")
+                                  val cat = o.optString("cat")
+                                  val err = o.optString("err")
+                                  val up = o.optBoolean("up")
+                                  val ready = o.optString("submit") == "ready"
+                                  if (err.isNotEmpty()) {
+                                      fail("Rumble says: $err")
+                                  } else {
+                                      if (up && t - lastPctLog > 20000) {
+                                          lastPctLog = t
+                                          log("  uploading " + o.optString("pct"))
+                                      }
+                                      if (catRounds == 0) {
+                                          needCatTap = true
+                                      }
+                                      if (!up && ready) stable++ else stable = 0
+                                      if (stable >= 4 && t - since > 15000) {
+                                          if (unl != "ok") {
+                                              stopRun("Ready to submit, but I could not confirm 'Unlisted' is selected, so I did NOT submit. Tap Debug and send me the text.")
+                                          } else if (catRounds == 0) {
+                                              // category step has not run yet - let it run first
+                                          } else {
+                                              state = S.SUBMITTING
+                                          }
+                                      } else if (t - since > 6 * 3600 * 1000L) {
+                                          fail("Upload took too long")
+                                      }
+                                  }
+                              }
+                              if (needCatTap && state == S.UPLOADING) {
+                                  catRounds++
+                                  catSequence(catRounds)
+                              } else {
+                                  busy = false
+                              }
+                          }
+                      }
+                      S.SUBMITTING -> {
+                          busy = true
+                          runJs("R.submitRect()") { r ->
+                              busy = false
+                              if (r != null && r != "0") {
+                                  try {
+                                      val o = JSONObject(r)
+                                      val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                      tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                      s1Taps++
+                                      urlAtSubmit = wv.url
+                                      state = S.CONFIRMING
+                                      since = SystemClock.elapsedRealtime()
+                                      log("  submitted (real tap " + s1Taps + ")")
+                                  } catch (e: Exception) {
+                                      stable = 0
+                                      state = S.UPLOADING
+                                  }
+                              } else {
+                                  stable = 0
+                                  state = S.UPLOADING
+                              }
+                          }
+                      }
+                      S.CONFIRMING -> {
+                          busy = true
+                          runJs("R.s2()") { r ->
+                              busy = false
+                              val t = SystemClock.elapsedRealtime()
+                              val o = try { JSONObject(r ?: "{}") } catch (e: Exception) { JSONObject() }
+                              val curUrl = wv.url ?: ""
+                              val left = !curUrl.contains("upload", true)
+                              val changed = curUrl != (urlAtSubmit ?: "")
+                              val s2vis = o.optBoolean("vis")
+                              val titleVis = o.optBoolean("title")
+                              if (s2vis && s2First == 0L) s2First = t
+                              if (left || (s2Taps > 0 && (changed || o.optBoolean("ok")))) {
+                                  markDone("")
+                              } else if (s2Taps > 0 && !s2vis && !titleVis) {
+                                  markDone("")
+                              } else if (s2vis) {
+                                  if (!stage2Logged) { stage2Logged = true; log("  final page: Personal Use + rights/terms") }
+                                  if (o.optBoolean("disabled")) {
+                                      if (!disLogged) { disLogged = true; log("  final Submit is greyed out, waiting...") }
+                                  } else if (s2Taps >= 6) {
+                                      fail("Final Submit did not respond to 6 taps. Tap Debug and send me the text")
+                                  } else if (t - s2First > 3000 && t - lastS2Tap > 5000 && o.has("x")) {
+                                      val sc = wv.width.toFloat() / o.getDouble("iw").toFloat()
+                                      tap(o.getDouble("x").toFloat() * sc, o.getDouble("y").toFloat() * sc)
+                                      s2Taps++
+                                      lastS2Tap = t
+                                      log("  tapped final Submit (" + s2Taps + ")")
+                                  }
+                              } else if (titleVis && t - since > 8000 && s1Taps < 4) {
+                                  state = S.SUBMITTING
+                              } else if (t - since > 120000) {
+                                  fail("Could not verify the upload on Rumble. The source file has been kept; retry or check Rumble manually.")
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/DownloadActivity.kt <<'RBU_EOF'
+          package com.rbu.uploader
+          
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.app.DownloadManager
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.database.Cursor
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.StatFs
+          import android.webkit.CookieManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.URLUtil
+          import android.webkit.WebSettings
+          import android.webkit.WebChromeClient
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.graphics.Color
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.URL
+          import java.security.MessageDigest
+          
+          /**
+           * Website-independent browser download queue. It only queues ordinary HTTP(S)
+           * links selected by the user. It does not bypass DRM, logins, or site restrictions.
+           */
+          class DownloadActivity : Activity() {
+              private data class Item(val key: String, val url: String, val name: String, val mime: String, var status: String = "queued", val cookie: String = "", val userAgent: String = "", val referer: String = "")
+              private val items = mutableListOf<Item>()
+              private lateinit var web: WebView
+              private lateinit var address: EditText
+              private lateinit var status: TextView
+              private lateinit var dm: DownloadManager
+              private val h = Handler(Looper.getMainLooper())
+              private var activeDownload = -1L
+              private var activeKey = ""
+              private var running = false
+              private var pauseAfterCurrent = false
+              private var receiverRegistered = false
+              private val prefs by lazy { getSharedPreferences("rbu", Context.MODE_PRIVATE) }
+              private val reserveBytes = 512L * 1024L * 1024L
+              private val uploadResultReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context?, intent: Intent?) {
+                      if (intent?.action != "com.rbu.uploader.DOWNLOAD_UPLOAD_RESULT") return
+                      val key = intent.getStringExtra("download_key") ?: return
+                      val result = intent.getStringExtra("result") ?: "uploaded"
+                      val item = items.firstOrNull { it.key == key } ?: return
+                      item.status = if (result == "uploaded") "uploaded" else "skipped"
+                      val completed = HashSet(prefs.getStringSet("dl_uploaded_keys", emptySet()) ?: emptySet())
+                      if (result == "uploaded") completed.add(key)
+                      prefs.edit().putStringSet("dl_uploaded_keys", completed).remove("dl_waiting_upload_key").apply()
+                      saveQueue()
+                      updateStatus(if (result == "uploaded") "Rumble verified: ${item.name}" else "Skipped unsupported file: ${item.name}")
+                      if (prefs.getBoolean("dl_auto_pipeline", false) && !prefs.getBoolean("dl_paused", false)) {
+                          running = false
+                          startQueue()
+                      }
+                  }
+              }
+          
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+          
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                  loadQueue()
+                  val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(18,18,18)); setPadding(dp(6),dp(6),dp(6),dp(6)) }
+                  val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  address = EditText(this).apply { isSingleLine = true; hint = "https://example.com"; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY) }
+                  top.addView(address, LinearLayout.LayoutParams(0, dp(48), 1f))
+                  top.addView(btn("Go") { openAddress() }, LinearLayout.LayoutParams(dp(64), dp(48)))
+                  root.addView(top)
+                  val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  controls.addView(btn("Select mode") { toggleSelectMode() }, LinearLayout.LayoutParams(0,dp(44),1f))
+                  controls.addView(btn("Select page") { selectPage() }, LinearLayout.LayoutParams(0,dp(44),1f))
+                  controls.addView(btn("Start") { startQueue() }, LinearLayout.LayoutParams(0,dp(44),1f))
+                  controls.addView(btn("Downloads") { showDownloadsPage() }, LinearLayout.LayoutParams(0,dp(44),1f))
+                  root.addView(controls)
+                  val controls2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  controls2.addView(btn("Pause") { pauseQueue() }, LinearLayout.LayoutParams(0,dp(42),1f))
+                  controls2.addView(btn("Resume") { resumeQueue() }, LinearLayout.LayoutParams(0,dp(42),1f))
+                  controls2.addView(btn("Clear pending") { items.removeAll { it.status == "queued" || it.status == "failed" }; saveQueue(); updateStatus() }, LinearLayout.LayoutParams(0,dp(42),1f))
+                  root.addView(controls2)
+                  status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 12f; setPadding(dp(5),dp(7),dp(5),dp(7)) }
+                  root.addView(status)
+                  web = WebView(this)
+                  web.settings.javaScriptEnabled = true
+                  web.settings.domStorageEnabled = true
+                  web.settings.javaScriptCanOpenWindowsAutomatically = false
+                  web.addJavascriptInterface(Bridge(), "RbuDownloadBridge")
+                  web.webViewClient = object : WebViewClient() {
+                      override fun onPageFinished(view: WebView?, url: String?) {
+                          super.onPageFinished(view, url)
+                          installSelectionScript()
+                          address.setText(url ?: "")
+                      }
+                  }
+                  web.webChromeClient = WebChromeClient()
+                  // Chrome-style: catch browser download events and add them to the queue; Start is user-controlled.
+                  web.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                      val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                      addBrowserDownload(url, fileName, mimeType ?: "", userAgent ?: "")
+                  }
+                  root.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,0,1f))
+                  setContentView(root)
+                  val uploadFilter = IntentFilter("com.rbu.uploader.DOWNLOAD_UPLOAD_RESULT")
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      registerReceiver(uploadResultReceiver, uploadFilter, Context.RECEIVER_NOT_EXPORTED)
+                  } else {
+                      registerReceiver(uploadResultReceiver, uploadFilter)
+                  }
+                  receiverRegistered = true
+                  web.loadUrl("https://www.google.com")
+                  val completedKeys = prefs.getStringSet("dl_uploaded_keys", emptySet()) ?: emptySet()
+                  items.filter { it.status == "awaiting_upload" && completedKeys.contains(it.key) }.forEach { it.status = "uploaded" }
+                  val waitingKey = prefs.getString("dl_waiting_upload_key", null)
+                  if (waitingKey != null && completedKeys.contains(waitingKey)) prefs.edit().remove("dl_waiting_upload_key").apply()
+                  if (prefs.getBoolean("dl_running", false)) {
+                      activeDownload = prefs.getLong("dl_active_id", -1L)
+                      activeKey = prefs.getString("dl_active_key", "") ?: ""
+                      running = activeDownload > 0
+                      if (running) pollActive()
+                  } else if (prefs.getBoolean("dl_auto_pipeline", false) &&
+                      !prefs.getBoolean("dl_paused", false) &&
+                      prefs.getString("dl_waiting_upload_key", null) == null) {
+                      startQueue()
+                  }
+                  saveQueue()
+                  updateStatus()
+              }
+          
+              /** A normal website download click is queued; it never starts until Start is pressed. */
+              private fun addBrowserDownload(url: String, fileName: String, mimeType: String, userAgent: String) {
+                  if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+                      updateStatus("This download link type is not supported")
+                      return
+                  }
+                  val key = sha(url)
+                  val existing = items.firstOrNull { it.key == key }
+                  if (existing != null) {
+                      if (existing.status == "failed") existing.status = "queued"
+                      saveQueue()
+                      updateStatus("Already in queue: ${existing.name}. Tap Start when ready.")
+                      return
+                  }
+                  if (isPreviouslyCompleted(key)) {
+                      updateStatus("This item is already marked completed")
+                      return
+                  }
+                  val cleanName = fileName.ifBlank { Uri.parse(url).lastPathSegment ?: "download" }.take(180)
+                  val cookie = CookieManager.getInstance().getCookie(url) ?: ""
+                  val agent = userAgent.ifBlank { web.settings.userAgentString }
+                  val referer = web.url ?: ""
+                  items.add(Item(key, url, cleanName, mimeType, "queued", cookie, agent, referer))
+                  saveQueue()
+                  updateStatus("Added to queue: $cleanName. Nothing downloads until you press Start.")
+              }
+
+              /** In-app Chrome-like downloads list. */
+              private fun showDownloadsPage() {
+                  val lines = if (items.isEmpty()) listOf("No downloads yet") else items.mapIndexed { index, item ->
+                      val label = when (item.status) {
+                          "queued" -> "Waiting"
+                          "downloading" -> "Downloading"
+                          "awaiting_upload" -> "Downloaded — waiting for Rumble verification"
+                          "uploaded" -> "Uploaded and verified"
+                          "skipped" -> "Skipped (not a supported video/archive)"
+                          "failed" -> "Failed — tap Resume to retry"
+                          else -> item.status
+                      }
+                      "${index + 1}. ${item.name}\n   $label"
+                  }
+                  val dialog = AlertDialog.Builder(this)
+                      .setTitle("Downloads")
+                      .setItems(lines.toTypedArray(), null)
+                      .setPositiveButton("Close", null)
+                      .setNeutralButton("Open Android downloads", null)
+                      .create()
+                  dialog.setOnShowListener {
+                      dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                          try { startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) }
+                          catch (_: Exception) { updateStatus("Android Downloads screen is unavailable") }
+                      }
+                  }
+                  dialog.show()
+              }
+          
+              private fun btn(label: String, action: () -> Unit) = Button(this).apply {
+                  text = label; isAllCaps = false; textSize = 11f; minHeight = 0; minimumHeight = dp(38); setPadding(dp(2),0,dp(2),0); setOnClickListener { action() }
+              }
+          
+              private fun openAddress() {
+                  var u = address.text.toString().trim()
+                  if (u.isBlank()) return
+                  if (!u.startsWith("http://", true) && !u.startsWith("https://", true)) u = "https://$u"
+                  if (u.startsWith("http://", true) || u.startsWith("https://", true)) web.loadUrl(u)
+              }
+          
+              private fun installSelectionScript() {
+                  val js = """(function(){if(window.__rbuDlInstalled)return;window.__rbuDlInstalled=true;window.__rbuSelectMode=false;
+          document.addEventListener('click',function(e){if(!window.__rbuSelectMode)return;var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();try{RbuDownloadBridge.add(a.href,(a.innerText||a.getAttribute('download')||a.href.split('/').pop()||'download').trim(),a.type||'');}catch(x){}},true);
+          window.__rbuSelectAll=function(){var a=[].slice.call(document.querySelectorAll('a[href]'));var n=0;for(var i=0;i<a.length;i++){var x=a[i];try{if(x.href&&/^https?:/i.test(x.href)){RbuDownloadBridge.add(x.href,(x.innerText||x.getAttribute('download')||x.href.split('/').pop()||'download').trim(),x.type||'');n++;}}catch(e){}}return n;};})();"""
+                  web.evaluateJavascript(js, null)
+              }
+          
+              private fun toggleSelectMode() {
+                  web.evaluateJavascript("window.__rbuSelectMode=!window.__rbuSelectMode;String(window.__rbuSelectMode)") { v ->
+                      updateStatus(if (v?.contains("true") == true) "Selection mode ON: tap links to add them" else "Selection mode OFF")
+                  }
+              }
+          
+              private fun selectPage() {
+                  web.evaluateJavascript("window.__rbuSelectAll?window.__rbuSelectAll():0") { updateStatus("Added links from this page. Check queue before starting.") }
+              }
+          
+              inner class Bridge {
+                  @JavascriptInterface fun add(url: String?, title: String?, mime: String?) {
+                      val u = url?.trim() ?: return
+                      if (!u.startsWith("http://", true) && !u.startsWith("https://", true)) return
+                      runOnUiThread {
+                          val key = sha(u)
+                          if (items.none { it.key == key } && !isPreviouslyCompleted(key)) {
+                              val n = (title ?: "").ifBlank { Uri.parse(u).lastPathSegment ?: "download" }.take(180)
+                              items.add(Item(key,u,n,mime ?: ""))
+                              saveQueue(); updateStatus("Added: $n")
+                          } else updateStatus("Already in queue/completed")
+                      }
+                  }
+              }
+          
+              private fun sha(v: String): String = MessageDigest.getInstance("SHA-256").digest(v.toByteArray()).joinToString("") { "%02x".format(it) }
+              private fun isPreviouslyCompleted(key: String): Boolean = prefs.getStringSet("dl_uploaded_keys", emptySet())?.contains(key) == true
+          
+              private fun loadQueue() {
+                  try {
+                      val a = JSONArray(prefs.getString("dl_queue", "[]"))
+                      for (i in 0 until a.length()) {
+                          val o = a.getJSONObject(i)
+                          items.add(Item(o.optString("key"),o.optString("url"),o.optString("name"),o.optString("mime"),o.optString("status","queued"),o.optString("cookie"),o.optString("userAgent"),o.optString("referer")))
+                      }
+                  } catch (_: Exception) { }
+              }
+          
+              private fun saveQueue() {
+                  val a = JSONArray()
+                  items.forEach { x -> a.put(JSONObject().put("key",x.key).put("url",x.url).put("name",x.name).put("mime",x.mime).put("status",x.status).put("cookie",x.cookie).put("userAgent",x.userAgent).put("referer",x.referer)) }
+                  prefs.edit().putString("dl_queue",a.toString()).apply()
+              }
+          
+              private fun freeBytes(): Long = try { StatFs(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath ?: filesDir.absolutePath).availableBytes } catch (_: Exception) { StatFs(filesDir.absolutePath).availableBytes }
+          
+              private fun startQueue() {
+                  if (running) { updateStatus("A download is already running"); return }
+                  prefs.edit().putBoolean("dl_auto_pipeline",true).putBoolean("dl_paused",false).apply()
+                  if (items.any { it.status == "awaiting_upload" }) {
+                      updateStatus("Waiting for the current file to finish uploading and be verified on Rumble.")
+                      return
+                  }
+                  if (freeBytes() < reserveBytes) { updateStatus("Not enough free space. Need at least 512 MB free."); return }
+                  running = true
+                  pauseAfterCurrent = false
+                  prefs.edit().putBoolean("dl_running",true)
+                      .putBoolean("dl_auto_pipeline",true)
+                      .putBoolean("dl_paused",false).apply()
+                  startNext()
+              }
+
+              private fun pauseQueue() {
+                  pauseAfterCurrent = false
+                  running = false
+                  if (activeDownload > 0) {
+                      // Android DownloadManager has no public pause API. Removing the request
+                      // cancels it; Resume re-queues this same item from the beginning.
+                      try { dm.remove(activeDownload) } catch (_: Exception) { }
+                      items.firstOrNull { it.key == activeKey }?.status = "queued"
+                      activeDownload = -1L
+                      activeKey = ""
+                  }
+                  prefs.edit().putBoolean("dl_running",false)
+                      .putBoolean("dl_auto_pipeline",false)
+                      .putBoolean("dl_paused",true)
+                      .remove("dl_active_id").remove("dl_active_key").apply()
+                  saveQueue()
+                  updateStatus("Paused. Resume will restart the current file from the beginning if it was downloading.")
+              }
+
+              private fun resumeQueue() {
+                  items.filter { it.status == "failed" }.forEach { it.status = "queued" }
+                  prefs.edit().putBoolean("dl_auto_pipeline",true).putBoolean("dl_paused",false).apply()
+                  saveQueue()
+                  if (items.any { it.status == "awaiting_upload" }) {
+                      updateStatus("Waiting for Rumble to verify the current upload. The next download will start automatically.")
+                  } else {
+                      running = false
+                      startQueue()
+                  }
+              }
+
+              private fun startNext() {
+                  if (!running || pauseAfterCurrent) { running = false; prefs.edit().putBoolean("dl_running",false).apply(); updateStatus("Paused. Tap Resume to continue."); return }
+                  if (items.any { it.status == "awaiting_upload" }) {
+                      running = false
+                      prefs.edit().putBoolean("dl_running",false).apply()
+                      updateStatus("Waiting for Rumble upload verification before downloading the next file.")
+                      return
+                  }
+                  if (freeBytes() < reserveBytes) { running = false; prefs.edit().putBoolean("dl_running",false).apply(); updateStatus("Paused: storage safety reserve reached."); return }
+                  val item = items.firstOrNull { it.status == "queued" }
+                  if (item == null) {
+                      running = false
+                      prefs.edit().putBoolean("dl_running",false).putBoolean("dl_auto_pipeline",false).apply()
+                      updateStatus("Download queue finished.")
+                      return
+                  }
+                  try {
+                      val uri = Uri.parse(item.url)
+                      val urlName = uri.lastPathSegment ?: ""
+                      val preferred = if (item.name.contains(Regex("\\.[A-Za-z0-9]{2,8}$"))) item.name else if (urlName.contains(Regex("\\.[A-Za-z0-9]{2,8}$"))) urlName else item.name
+                      val fileName = safeName(addKnownExtension(preferred, item.mime, urlName))
+                      val req = DownloadManager.Request(uri)
+                          .setTitle(fileName)
+                          .setDescription("Rumble Batch Uploader download queue")
+                          .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                          // Strictly use the phone's cellular/mobile network for file payloads.
+                          // This prevents the download queue from consuming Wi-Fi data.
+                          .setAllowedNetworkTypes(DownloadManager.Request.NETWORK_MOBILE)
+                          .setAllowedOverMetered(true)
+                          .setAllowedOverRoaming(false)
+                          .setDestinationInExternalFilesDir(this,Environment.DIRECTORY_DOWNLOADS,fileName)
+                      val cookie = item.cookie.ifBlank { CookieManager.getInstance().getCookie(item.url) ?: "" }
+                      if (cookie.isNotBlank()) req.addRequestHeader("Cookie", cookie)
+                      val agent = item.userAgent.ifBlank { WebSettings.getDefaultUserAgent(this) }
+                      if (agent.isNotBlank()) req.addRequestHeader("User-Agent", agent)
+                      val referer = item.referer.ifBlank { web.url ?: "" }
+                      if (referer.isNotBlank()) req.addRequestHeader("Referer", referer)
+                      activeKey = item.key
+                      activeDownload = dm.enqueue(req)
+                      item.status = "downloading"
+                      prefs.edit().putLong("dl_active_id",activeDownload).putString("dl_active_key",activeKey).putBoolean("dl_running",true).apply()
+                      saveQueue(); updateStatus("Downloading: ${item.name}")
+                      pollActive()
+                  } catch (e: Exception) {
+                      item.status = "failed"
+                      running = false
+                      saveQueue()
+                      prefs.edit().putBoolean("dl_running",false).putBoolean("dl_auto_pipeline",false).apply()
+                      updateStatus("Could not start ${item.name}: ${e.message}. Tap Resume to retry.")
+                  }
+              }
+          
+              private fun pollActive() {
+                  if (activeDownload <= 0) { startNext(); return }
+                  val c: Cursor? = try { dm.query(DownloadManager.Query().setFilterById(activeDownload)) } catch (_: Exception) { null }
+                  var statusCode = -1; var reason = 0
+                  c?.use { if (it.moveToFirst()) { statusCode = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)); reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)) } }
+                  when (statusCode) {
+                      DownloadManager.STATUS_SUCCESSFUL -> {
+                          val uri = dm.getUriForDownloadedFile(activeDownload)
+                          val item = items.firstOrNull { it.key == activeKey }
+                          if (uri != null && item != null) {
+                              val resolvedMime = queryMime(activeDownload).ifBlank { item.mime }
+                              val urlName = Uri.parse(item.url).lastPathSegment ?: ""
+                              val resolvedName = addKnownExtension(item.name, resolvedMime, urlName)
+                              item.status = "awaiting_upload"
+                              prefs.edit().putString("dl_waiting_upload_key", item.key).apply()
+                              val stable = "download:" + item.key
+                              val main = Intent(this,MainActivity::class.java).apply {
+                                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                                  putExtra("rbu_download_uri",uri.toString())
+                                  putExtra("rbu_download_id",stable)
+                                  putExtra("rbu_download_name",resolvedName)
+                                  putExtra("rbu_download_mime",resolvedMime)
+                                  putExtra("rbu_download_key",item.key)
+                              }
+                              if (MainActivity.instance != null) MainActivity.instance?.acceptDownloadedFile(stable,uri,resolvedName,resolvedMime,item.key)
+                              else startActivity(main)
+                              saveQueue()
+                          } else if (item != null) { item.status = "failed"; saveQueue() }
+                          activeDownload = -1L; activeKey = ""
+                          running = false
+                          prefs.edit().putBoolean("dl_running",false).remove("dl_active_id").remove("dl_active_key").apply()
+                          updateStatus("Download complete. Waiting for Rumble upload and verification before the next download.")
+                      }
+                      DownloadManager.STATUS_FAILED -> {
+                          items.firstOrNull { it.key == activeKey }?.status = "failed"
+                          saveQueue(); activeDownload = -1L; activeKey = ""
+                          running = false
+                          prefs.edit().putBoolean("dl_running",false).putBoolean("dl_auto_pipeline",false)
+                              .remove("dl_active_id").remove("dl_active_key").apply()
+                          updateStatus("Download failed (reason $reason). Tap Resume to retry; later files remain queued.")
+                      }
+                      DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED -> {
+                          var downloaded = 0L
+                          var total = -1L
+                          try {
+                              dm.query(DownloadManager.Query().setFilterById(activeDownload))?.use { q ->
+                                  if (q.moveToFirst()) {
+                                      downloaded = q.getLong(q.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                                      total = q.getLong(q.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                                  }
+                              }
+                          } catch (_: Exception) { }
+                          val progress = if (total > 0) " • ${downloaded * 100 / total}% (${formatBytes(downloaded)} / ${formatBytes(total)})" else " • ${formatBytes(downloaded)}"
+                          updateStatus("Downloading$progress")
+                          h.postDelayed({ pollActive() },1500)
+                      }
+                      else -> {
+                          // A restored queue may have lost its DownloadManager record. Retry the item.
+                          items.firstOrNull { it.key == activeKey }?.status = "queued"
+                          activeDownload = -1L; activeKey = ""
+                          prefs.edit().remove("dl_active_id").remove("dl_active_key").apply()
+                          saveQueue(); h.postDelayed({ startNext() },500)
+                      }
+                  }
+              }
+          
+              private fun queryMime(id: Long): String {
+                  return try {
+                      dm.query(DownloadManager.Query().setFilterById(id))?.use { c ->
+                          if (c.moveToFirst()) c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_MEDIA_TYPE)) ?: "" else ""
+                      } ?: ""
+                  } catch (_: Exception) { "" }
+              }
+          
+              private fun addKnownExtension(name: String, mime: String, urlName: String): String {
+                  if (name.contains(Regex("\\.[A-Za-z0-9]{2,8}$"))) return name
+                  if (urlName.contains(Regex("\\.[A-Za-z0-9]{2,8}$"))) return urlName
+                  val ext = when (mime.substringBefore(';').lowercase()) {
+                      "video/mp4" -> ".mp4"
+                      "video/webm" -> ".webm"
+                      "video/quicktime" -> ".mov"
+                      "video/x-matroska" -> ".mkv"
+                      "video/x-msvideo" -> ".avi"
+                      "application/zip", "application/x-zip-compressed" -> ".zip"
+                      "application/x-rar-compressed", "application/vnd.rar" -> ".rar"
+                      "application/x-7z-compressed" -> ".7z"
+                      "application/x-tar" -> ".tar"
+                      else -> ""
+                  }
+                  return if (ext.isNotEmpty()) name + ext else name
+              }
+          
+              private fun safeName(s: String): String {
+                  val clean = s.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[^A-Za-z0-9._ ()-]"),"_").take(150)
+                  return if (clean.isBlank()) "download_${System.currentTimeMillis()}.bin" else clean
+              }
+          
+              private fun formatBytes(bytes: Long): String {
+                  if (bytes < 0) return "Unknown size"
+                  val mb = bytes / (1024.0 * 1024.0)
+                  return if (mb >= 1024) String.format(java.util.Locale.US, "%.2f GB", mb / 1024.0)
+                  else String.format(java.util.Locale.US, "%.1f MB", mb)
+              }
+          
+              private fun updateStatus(extra: String? = null) {
+                  val done = items.count { it.status == "uploaded" }
+                  val waiting = items.count { it.status == "awaiting_upload" }
+                  val pending = items.count { it.status == "queued" || it.status == "failed" }
+                  status.text = (extra?.plus("\\n") ?: "") + "Selected: ${items.size} • pending: $pending • awaiting Rumble verification: $waiting • verified uploads: $done\\nDownload network: MOBILE DATA ONLY (Wi-Fi blocked)\\nFree space: ${freeBytes()/1024/1024} MB"
+              }
+
+              override fun onBackPressed() {
+                  if (running || activeDownload > 0 || items.any { it.status == "awaiting_upload" } ||
+                      prefs.getBoolean("dl_auto_pipeline", false)) {
+                      updateStatus("Download tab kept alive in the background")
+                      moveTaskToBack(true)
+                  } else super.onBackPressed()
+              }
+
+              override fun onDestroy() {
+                  h.removeCallbacksAndMessages(null)
+                  if (receiverRegistered) {
+                      try { unregisterReceiver(uploadResultReceiver) } catch (_: Exception) { }
+                      receiverRegistered = false
+                  }
+                  try { web.destroy() } catch (_: Exception) { }
+                  super.onDestroy()
+              }
+
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/RbuService.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+
+          class RbuService : Service() {
+              private var wake: PowerManager.WakeLock? = null
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val notif = Notifier.running(this, "Uploading videos in the background...")
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          startForeground(Notifier.ID_RUN, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                      } else {
+                          startForeground(Notifier.ID_RUN, notif)
+                      }
+                  } catch (e: Exception) { }
+                  try {
+                      val pm = getSystemService(POWER_SERVICE) as PowerManager
+                      wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rbu:service")
+                      wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  // intent == null means Android restarted this service after killing the app
+                  if (intent == null) {
+                      try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+                  }
+                  return START_STICKY
+              }
+
+              override fun onDestroy() {
+                  try { if (wake?.isHeld == true) wake?.release() } catch (e: Exception) { }
+                  super.onDestroy()
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/Notifier.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Build
+
+          object Notifier {
+              const val CH_RUN = "rbu_channel"
+              const val CH_RESUME = "rbu_resume"
+              const val ID_RUN = 1
+              const val ID_RESUME = 2
+              const val ACTION_STOP = "com.rbu.uploader.STOP"
+
+              private fun ensureChannels(ctx: Context) {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val nm = ctx.getSystemService(NotificationManager::class.java)
+                      nm.createNotificationChannel(NotificationChannel(CH_RUN, "Rumble Uploader", NotificationManager.IMPORTANCE_LOW))
+                      nm.createNotificationChannel(NotificationChannel(CH_RESUME, "Rumble Uploader - resume", NotificationManager.IMPORTANCE_HIGH))
+                  }
+              }
+
+              private fun builder(ctx: Context, channel: String): Notification.Builder =
+                  if (Build.VERSION.SDK_INT >= 26) Notification.Builder(ctx, channel) else Notification.Builder(ctx)
+
+              private fun openIntent(ctx: Context, auto: Boolean): PendingIntent {
+                  val i = Intent(ctx, MainActivity::class.java)
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                  if (auto) i.putExtra("auto", true)
+                  return PendingIntent.getActivity(ctx, if (auto) 11 else 10, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+              }
+
+              fun running(ctx: Context, text: String): Notification {
+                  ensureChannels(ctx)
+                  val stopIntent = Intent(ctx, ControlReceiver::class.java)
+                  stopIntent.action = ACTION_STOP
+                  val stop = PendingIntent.getBroadcast(ctx, 12, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                  return builder(ctx, CH_RUN)
+                      .setContentTitle("Rumble Uploader")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.stat_sys_upload)
+                      .setOngoing(true)
+                      .setOnlyAlertOnce(true)
+                      .setContentIntent(openIntent(ctx, false))
+                      .addAction(0, "Stop", stop)
+                      .build()
+              }
+
+              fun update(ctx: Context, text: String) {
+                  try {
+                      ctx.getSystemService(NotificationManager::class.java).notify(ID_RUN, running(ctx, text))
+                  } catch (e: Exception) { }
+              }
+
+              fun postResume(ctx: Context, text: String) {
+                  try {
+                      ensureChannels(ctx)
+                      val n = builder(ctx, CH_RESUME)
+                          .setContentTitle("Rumble Uploader - tap to continue")
+                          .setContentText(text)
+                          .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                          .setAutoCancel(true)
+                          .setContentIntent(openIntent(ctx, true))
+                          .build()
+                      ctx.getSystemService(NotificationManager::class.java).notify(ID_RESUME, n)
+                  } catch (e: Exception) { }
+              }
+
+              fun cancelResume(ctx: Context) {
+                  try { ctx.getSystemService(NotificationManager::class.java).cancel(ID_RESUME) } catch (e: Exception) { }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/Revive.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.SystemClock
+
+          // Brings the uploader back if it was killed while a run was wanted.
+          object Revive {
+              @Volatile private var lastTry = 0L
+
+              fun alive(): Boolean {
+                  return MainActivity.instance != null && MainActivity.isRunning &&
+                      SystemClock.elapsedRealtime() - MainActivity.lastBeat < 40000
+              }
+
+              fun ensure(ctx: Context) {
+                  val p = ctx.getSharedPreferences("rbu", Context.MODE_PRIVATE)
+                  if (!p.getBoolean("run_wanted", false)) return
+                  // The app screen exists (it is starting up or running) - nothing to bring back.
+                  if (MainActivity.instance != null) return
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastTry < 30000) return
+                  lastTry = now
+                  val n = p.getInt("revive_n", 0)
+                  if (n >= 5) {
+                      Notifier.postResume(ctx, "It could not restart by itself. Tap to continue.")
+                      return
+                  }
+                  p.edit().putInt("revive_n", n + 1).apply()
+                  try {
+                      val i = Intent(ctx, MainActivity::class.java)
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                      i.putExtra("auto", true)
+                      ctx.startActivity(i)
+                  } catch (e: Exception) { }
+                  // If Android refused to start it from the background, leave a tap-to-continue notification.
+                  Handler(Looper.getMainLooper()).postDelayed({
+                      if (p.getBoolean("run_wanted", false) && MainActivity.instance == null) {
+                          Notifier.postResume(ctx, "The uploader was closed. Tap to continue.")
+                      }
+                  }, 8000)
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/WatchdogService.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.accessibilityservice.AccessibilityService
+          import android.os.SystemClock
+          import android.view.accessibility.AccessibilityEvent
+
+          // Like an app locker: every time any app opens, check that the uploader is alive.
+          // It only listens for "a window changed" - it does not read anything on the screen.
+          class WatchdogService : AccessibilityService() {
+              private var last = 0L
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - last < 2500) return
+                  last = now
+                  try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+              }
+
+              override fun onInterrupt() { }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/BootReceiver.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(ctx: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+                      val p = ctx.getSharedPreferences("rbu", Context.MODE_PRIVATE)
+                      if (p.getBoolean("run_wanted", false)) {
+                          Notifier.postResume(ctx, "The phone restarted while videos were uploading. Tap to continue.")
+                      }
+                  }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/uploader/ControlReceiver.kt <<'RBU_EOF'
+          package com.rbu.uploader
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+
+          class ControlReceiver : BroadcastReceiver() {
+              override fun onReceive(ctx: Context, intent: Intent) {
+                  if (intent.action == Notifier.ACTION_STOP) {
+                      ctx.getSharedPreferences("rbu", Context.MODE_PRIVATE).edit().putBoolean("run_wanted", false).apply()
+                      val a = MainActivity.instance
+                      if (a != null) {
+                          a.runOnUiThread { a.stopFromNotification() }
+                      } else {
+                          try { ctx.stopService(Intent(ctx, RbuService::class.java)) } catch (e: Exception) { }
+                      }
+                  }
+              }
+          }
+          RBU_EOF
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RumbleUploader-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest APK
+          files: app/build/outputs/apk/debug/app-debug.apk
