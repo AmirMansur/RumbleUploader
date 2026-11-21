@@ -1,0 +1,1800 @@
+name: Build Folder Downloader APK
+on:
+  workflow_dispatch:
+  push:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Write project files
+        run: |
+          mkdir -p app/src/main/java/com/rbu/folderdl app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle.kts <<'RBU_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "FolderDownloader"
+          include(":app")
+          RBU_EOF
+          cat > build.gradle.kts <<'RBU_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          RBU_EOF
+          cat > gradle.properties <<'RBU_EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          RBU_EOF
+          cat > app/build.gradle.kts <<'RBU_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.rbu.folderdl"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.rbu.folderdl"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/AndroidManifest.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <application
+                  android:label="Folder Downloader"
+                  android:allowBackup="false"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:theme="@style/FdlTheme"
+                      android:screenOrientation="portrait"
+                      android:windowSoftInputMode="adjustResize"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".DownloadService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+                  <service
+                      android:name=".WatchdogService"
+                      android:exported="true"
+                      android:label="Folder Downloader watchdog"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/watchdog_config" />
+                  </service>
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          RBU_EOF
+          cat > app/src/main/res/values/strings.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="watchdog_desc">Each time you open an app, checks that Folder Downloader is still downloading and brings it back if it was closed. It does not read your screen.</string>
+          </resources>
+          RBU_EOF
+          cat > app/src/main/res/values/styles.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="FdlTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowAnimationStyle">@null</item>
+              </style>
+          </resources>
+          RBU_EOF
+          cat > app/src/main/res/xml/watchdog_config.xml <<'RBU_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="300"
+              android:description="@string/watchdog_desc" />
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/MainActivity.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.view.inputmethod.EditorInfo
+          import android.webkit.CookieManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.URLUtil
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import org.json.JSONArray
+          import org.json.JSONTokener
+
+          class MainActivity : Activity() {
+
+              companion object {
+                  const val REQ_TREE = 11
+                  const val REQ_NOTIF = 22
+                  @Volatile var instance: MainActivity? = null
+                  const val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                  private val fileExt = Regex(".*\\.(mp4|mov|mkv|avi|webm|m4v|3gp|flv|wmv|mpg|mpeg|ts|mts|m2ts|zip|rar|7z|tar|gz|tgz)", RegexOption.IGNORE_CASE)
+                  const val SELECT_JS = """(function(){if(window.__rbuDlInstalled)return;window.__rbuDlInstalled=true;window.__rbuSelectMode=false;
+          var EXT=/\.(mp4|mov|mkv|avi|webm|m4v|3gp|flv|wmv|mpg|mpeg|ts|mts|m2ts|zip|rar|7z|tar|gz|tgz)([?#]|$)/i;
+          function nm(a,u){var f=u.split('?')[0].split('/').pop()||'';try{f=decodeURIComponent(f);}catch(e){}if(/\.[A-Za-z0-9]{2,5}$/.test(f))return f;return (a.getAttribute&&a.getAttribute('download'))||(a.innerText||'').trim()||f||'download';}
+          document.addEventListener('click',function(e){if(!window.__rbuSelectMode)return;var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();try{RbuDownloadBridge.add(a.href,nm(a,a.href),a.type||'');}catch(x){}},true);
+          window.__rbuCollect=function(){var seen={},out=[];function add(u,t,m){if(!u||!/^https?:/i.test(u)||seen[u])return;seen[u]=1;out.push({u:u,n:t,m:m||''});}
+          var a=document.querySelectorAll('a[href]');for(var i=0;i<a.length;i++){var x=a[i];if(EXT.test(x.href)||x.hasAttribute('download'))add(x.href,nm(x,x.href),x.type);}
+          var v=document.querySelectorAll('video[src],source[src]');for(var j=0;j<v.length;j++){var s=v[j].src;if(s&&!/^blob:/i.test(s))add(s,s.split('?')[0].split('/').pop(),'video/mp4');}
+          return JSON.stringify(out);};})();"""
+              }
+
+              private lateinit var wv: WebView
+              private lateinit var root: LinearLayout
+              private lateinit var address: EditText
+              private lateinit var lockLayer: FrameLayout
+              private lateinit var lockLabel: TextView
+              private lateinit var unlockBtn: Button
+              private lateinit var logView: TextView
+              private lateinit var logScroll: ScrollView
+              private lateinit var statusView: TextView
+              private var floatBtn: Button? = null
+              private var selBtn: Button? = null
+              private var locked = false
+              private var floating = false
+              private var floatBox: FrameLayout? = null
+              private var placeholder: TextView? = null
+              private var floatTaps = 0
+              private var lastFloatTap = 0L
+              private var autoBoot = false
+              private var selectMode = false
+              private var folderPrompted = false
+              private var warnShowing = false
+              private var lastLogVersion = -1
+              private val h = Handler(Looper.getMainLooper())
+
+              private val engineListener: () -> Unit = {
+                  refreshStatus()
+                  refreshLog()
+                  checkPrompts()
+              }
+
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      refreshStatus()
+                      h.postDelayed(this, 3000)
+                  }
+              }
+
+              private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  instance = this
+                  Engine.init(this)
+
+                  root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#111111"))
+
+                  fun btn(t: String, f: () -> Unit): Button {
+                      val b = Button(this)
+                      b.text = t
+                      b.textSize = 11f
+                      b.isAllCaps = false
+                      b.minHeight = 0
+                      b.minimumHeight = dp(40)
+                      b.setPadding(dp(2), 0, dp(2), 0)
+                      b.setOnClickListener { f() }
+                      return b
+                  }
+                  fun row(vararg bs: Button): LinearLayout {
+                      val r = LinearLayout(this)
+                      r.orientation = LinearLayout.HORIZONTAL
+                      for (b in bs) r.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                      return r
+                  }
+
+                  val top = LinearLayout(this)
+                  top.orientation = LinearLayout.HORIZONTAL
+                  address = EditText(this)
+                  address.isSingleLine = true
+                  address.hint = "Search or type a website"
+                  address.setTextColor(Color.WHITE)
+                  address.setHintTextColor(Color.GRAY)
+                  address.textSize = 14f
+                  address.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                  address.imeOptions = EditorInfo.IME_ACTION_GO
+                  address.setOnEditorActionListener { _, _, _ ->
+                      go()
+                      true
+                  }
+                  top.addView(address, LinearLayout.LayoutParams(0, dp(44), 1f))
+                  top.addView(btn("Go") { go() }, LinearLayout.LayoutParams(dp(60), dp(44)))
+                  root.addView(top)
+
+                  root.addView(row(
+                      btn("Select folder") { pickFolder() },
+                      btn("Downloads") { showDownloads() },
+                      btn("Back") { if (wv.canGoBack()) wv.goBack() }
+                  ))
+                  selBtn = btn("Select mode: OFF") { toggleSelectMode() }
+                  root.addView(row(
+                      selBtn!!,
+                      btn("Select page") { selectPage() },
+                      btn("Reload") { wv.reload() }
+                  ))
+                  floatBtn = btn("Float") { toggleFloat() }
+                  root.addView(row(
+                      btn("Lock") { lockScreen(false) },
+                      btn("Dim") { lockScreen(true) },
+                      floatBtn!!
+                  ))
+                  root.addView(row(
+                      btn("Watchdog") { setupWatchdog() },
+                      btn("Battery") { batterySetting() },
+                      btn("Clear log") { Engine.clearLog() }
+                  ))
+
+                  statusView = TextView(this)
+                  statusView.setTextColor(Color.WHITE)
+                  statusView.textSize = 12f
+                  statusView.setPadding(dp(8), dp(4), dp(8), dp(4))
+                  root.addView(statusView)
+
+                  wv = WebView(this)
+                  val s = wv.settings
+                  s.javaScriptEnabled = true
+                  s.domStorageEnabled = true
+                  s.allowContentAccess = true
+                  s.mediaPlaybackRequiresUserGesture = false
+                  s.userAgentString = UA
+                  s.setSupportZoom(true)
+                  s.builtInZoomControls = true
+                  s.displayZoomControls = false
+                  CookieManager.getInstance().setAcceptCookie(true)
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+                  wv.addJavascriptInterface(Bridge(), "RbuDownloadBridge")
+                  wv.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                          val u = request?.url?.toString() ?: return false
+                          if (request.isForMainFrame && request.method == "GET" && !selectMode) {
+                              val path = u.substringBefore('#').substringBefore('?')
+                              if ((u.startsWith("http://", true) || u.startsWith("https://", true)) && fileExt.matches(path)) {
+                                  queueDownload(u, Uri.parse(u).lastPathSegment ?: "download", "", UA)
+                                  return true
+                              }
+                          }
+                          return false
+                      }
+
+                      override fun onPageFinished(view: WebView?, url: String?) {
+                          if (url != null && !address.hasFocus()) address.setText(url)
+                          view?.evaluateJavascript(SELECT_JS, null)
+                          if (selectMode) view?.evaluateJavascript("window.__rbuSelectMode=true", null)
+                      }
+                  }
+                  wv.webChromeClient = WebChromeClient()
+                  // A download starts as soon as a download link is tapped, like a normal browser.
+                  wv.setDownloadListener { url, ua, cd, mime, _ ->
+                      queueDownload(url, URLUtil.guessFileName(url, cd, mime), mime ?: "", if (ua.isNullOrBlank()) UA else ua)
+                  }
+                  root.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
+
+                  logView = TextView(this)
+                  logView.setTextColor(Color.parseColor("#9fe870"))
+                  logView.textSize = 11f
+                  logView.setPadding(dp(8), dp(4), dp(8), dp(4))
+                  logView.setTextIsSelectable(true)
+                  logScroll = ScrollView(this)
+                  logScroll.addView(logView)
+                  root.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.2f))
+
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val wc = ViewGroup.LayoutParams.WRAP_CONTENT
+                  val frame = FrameLayout(this)
+                  frame.addView(root, FrameLayout.LayoutParams(mp, mp))
+                  lockLayer = FrameLayout(this)
+                  lockLayer.visibility = View.GONE
+                  lockLayer.isClickable = true
+                  lockLabel = TextView(this)
+                  lockLabel.setTextColor(Color.WHITE)
+                  lockLabel.textSize = 18f
+                  lockLayer.addView(lockLabel, FrameLayout.LayoutParams(wc, wc, Gravity.CENTER))
+                  unlockBtn = Button(this)
+                  unlockBtn.text = "Unlock"
+                  unlockBtn.isAllCaps = false
+                  unlockBtn.setOnClickListener { unlockScreen() }
+                  lockLayer.addView(unlockBtn, FrameLayout.LayoutParams(wc, wc, Gravity.TOP or Gravity.END))
+                  frame.addView(lockLayer, FrameLayout.LayoutParams(mp, mp))
+                  setContentView(frame)
+
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                  ) {
+                      requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
+                  }
+                  Engine.addListener(engineListener)
+                  wv.loadUrl("https://www.google.com")
+                  Engine.log("1) Tap 'Select folder' and pick where downloads should be saved.\n2) Open a website and tap a download link. It starts right away.\nZIP files are extracted automatically and the ZIP is deleted.\nDownloads stop when only 1 GB of space is left.")
+                  handleAuto(intent)
+                  Engine.ensureWorker()
+                  refreshLog()
+                  refreshStatus()
+              }
+
+              override fun onNewIntent(intent: Intent?) {
+                  super.onNewIntent(intent)
+                  setIntent(intent)
+                  handleAuto(intent)
+              }
+
+              override fun onStart() {
+                  super.onStart()
+                  Engine.appVisible = true
+                  Engine.changed(true)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  if (!autoBoot) {
+                      if (root.visibility != View.VISIBLE) root.visibility = View.VISIBLE
+                      if (floating) dock(false)
+                  }
+                  h.removeCallbacks(ticker)
+                  h.post(ticker)
+                  refreshStatus()
+                  checkPrompts()
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  h.removeCallbacks(ticker)
+              }
+
+              override fun onStop() {
+                  super.onStop()
+                  Engine.appVisible = false
+                  Engine.changed(true)
+                  // leaving the app while downloads are active: keep the browser alive in a small side bubble
+                  try { if (Engine.hasWork() && !floating && !isFinishing && canOverlay()) startFloat(false, false) } catch (e: Exception) { }
+              }
+
+              override fun onDestroy() {
+                  Engine.removeListener(engineListener)
+                  h.removeCallbacksAndMessages(null)
+                  if (instance === this) instance = null
+                  if (floating) { try { dock(false) } catch (e: Exception) { } }
+                  try { wv.destroy() } catch (e: Exception) { }
+                  super.onDestroy()
+              }
+
+              override fun onBackPressed() {
+                  if (locked) return
+                  if (wv.canGoBack()) {
+                      wv.goBack()
+                  } else if (Engine.hasWork()) {
+                      moveTaskToBack(true)
+                  } else {
+                      super.onBackPressed()
+                  }
+              }
+
+              // ---------- browser ----------
+              private fun go() {
+                  val t = address.text.toString().trim()
+                  if (t.isEmpty()) return
+                  val u = if (t.startsWith("http://", true) || t.startsWith("https://", true)) t
+                  else if (t.contains(" ") || !t.contains(".")) "https://www.google.com/search?q=" + Uri.encode(t)
+                  else "https://" + t
+                  wv.loadUrl(u)
+                  address.clearFocus()
+              }
+
+              private fun queueDownload(url: String, name: String, mime: String, ua: String) {
+                  Engine.enqueue(url, name, mime, ua, wv.url ?: "")
+                  refreshStatus()
+              }
+
+              private fun unwrap(r: String?): String? {
+                  if (r == null || r == "null") return null
+                  return try { (JSONTokener(r).nextValue() as? String) ?: r } catch (e: Exception) { r }
+              }
+
+              inner class Bridge {
+                  @JavascriptInterface
+                  fun add(url: String?, title: String?, mime: String?) {
+                      val u = url?.trim() ?: return
+                      if (!u.startsWith("http://", true) && !u.startsWith("https://", true)) return
+                      runOnUiThread {
+                          // only accept this from the page while Select mode is on
+                          if (selectMode) {
+                              val n = (title ?: "").ifBlank { Uri.parse(u).lastPathSegment ?: "download" }.take(150)
+                              queueDownload(u, n, mime ?: "", UA)
+                          }
+                      }
+                  }
+              }
+
+              private fun toggleSelectMode() {
+                  selectMode = !selectMode
+                  selBtn?.text = if (selectMode) "Select mode: ON" else "Select mode: OFF"
+                  wv.evaluateJavascript(SELECT_JS, null)
+                  wv.evaluateJavascript("window.__rbuSelectMode=" + selectMode, null)
+                  Engine.log(if (selectMode) "Select mode ON: tap any link on the page to download it." else "Select mode OFF.")
+              }
+
+              private fun selectPage() {
+                  wv.evaluateJavascript(SELECT_JS, null)
+                  wv.evaluateJavascript("window.__rbuCollect?window.__rbuCollect():'[]'") { r ->
+                      val raw = unwrap(r) ?: "[]"
+                      val arr = try { JSONArray(raw) } catch (e: Exception) { JSONArray() }
+                      if (arr.length() == 0) {
+                          Engine.log("No downloadable video/ZIP links found on this page. Use Select mode and tap a link, or tap a direct .mp4/.zip link.")
+                      } else {
+                          AlertDialog.Builder(this)
+                              .setTitle("Download from this page")
+                              .setMessage("Found " + arr.length() + " downloadable file(s). Download them all now, one after another?")
+                              .setPositiveButton("Download all") { _, _ ->
+                                  for (i in 0 until arr.length()) {
+                                      val o = arr.getJSONObject(i)
+                                      queueDownload(o.optString("u"), o.optString("n", "download"), o.optString("m"), UA)
+                                  }
+                              }
+                              .setNegativeButton("Cancel", null)
+                              .show()
+                      }
+                  }
+              }
+
+              // ---------- folder ----------
+              private fun pickFolder() {
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                  i.addFlags(
+                      Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                          Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                  )
+                  try {
+                      startActivityForResult(i, REQ_TREE)
+                  } catch (e: Exception) {
+                      Engine.log("No file picker available on this phone.")
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQ_TREE && resultCode == RESULT_OK) {
+                      val u = data?.data ?: return
+                      try {
+                          contentResolver.takePersistableUriPermission(
+                              u, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                          )
+                      } catch (e: Exception) { }
+                      folderPrompted = false
+                      Engine.setTree(u)
+                      refreshStatus()
+                  }
+              }
+
+              // ---------- status / log / prompts ----------
+              private fun watchdogOn(): Boolean {
+                  val v = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+                  return v.contains("com.rbu.folderdl") && v.contains("WatchdogService")
+              }
+
+              private fun refreshStatus() {
+                  val free = Engine.freeBytes()
+                  val usable = maxOf(0L, free - Engine.RESERVE)
+                  val sb = StringBuilder()
+                  sb.append("Folder: ").append(if (Engine.tree() == null) "NOT CHOSEN - tap Select folder" else Engine.treeName())
+                  sb.append("  •  ").append(if (Engine.hasWork()) "DOWNLOADING" else "idle")
+                  sb.append("  •  watchdog ").append(if (watchdogOn()) "ON" else "OFF").append('\n')
+                  sb.append("Free space: ").append(Engine.fmt(free)).append("  •  usable before 1 GB reserve: ").append(Engine.fmt(usable))
+                  var color = Color.WHITE
+                  if (free <= Engine.RESERVE) {
+                      color = Color.parseColor("#FF5252")
+                      sb.append("\nSTOPPED: only ").append(Engine.fmt(free)).append(" left. Downloads are paused.")
+                  } else if (free < Engine.WARN) {
+                      color = Color.parseColor("#FFB74D")
+                      sb.append("\nWarning: less than 2 GB free. Downloads stop when 1 GB is left.")
+                  }
+                  val act = Engine.activeCount()
+                  if (act > 0) {
+                      sb.append("\nWaiting/active: ").append(act)
+                      val c = Engine.currentItem
+                      if (c != null) {
+                          sb.append(" • ").append(c.name)
+                          if (c.status == "extracting") sb.append(" (extracting)")
+                          else if (c.total > 0) sb.append(" ").append(c.done * 100 / c.total).append("%")
+                          else sb.append(" ").append(Engine.fmt(c.done))
+                      }
+                  }
+                  val br = Engine.blockReason
+                  if (br != null) sb.append('\n').append(br)
+                  statusView.text = sb.toString()
+                  statusView.setTextColor(color)
+              }
+
+              private fun refreshLog() {
+                  val v = Engine.logVersion
+                  if (v == lastLogVersion) return
+                  lastLogVersion = v
+                  logView.text = Engine.logSnapshot()
+                  logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+              }
+
+              private fun checkPrompts() {
+                  if (isFinishing || autoBoot) return
+                  if (Engine.tree() == null && Engine.items.any { it.status == "queued" } && !folderPrompted) {
+                      folderPrompted = true
+                      AlertDialog.Builder(this)
+                          .setTitle("Choose a download folder")
+                          .setMessage("Pick the folder where your downloads should be saved. Tip: create or pick a sub-folder (Android does not allow choosing the Download root itself).")
+                          .setPositiveButton("Select folder") { _, _ -> pickFolder() }
+                          .setNegativeButton("Later", null)
+                          .show()
+                      return
+                  }
+                  val w = Engine.lastWarning
+                  if (w != null && Engine.appVisible && !warnShowing) {
+                      Engine.lastWarning = null
+                      warnShowing = true
+                      AlertDialog.Builder(this)
+                          .setTitle("Warning")
+                          .setMessage(w)
+                          .setPositiveButton("OK", null)
+                          .setOnDismissListener { warnShowing = false }
+                          .show()
+                  }
+              }
+
+              // ---------- downloads list ----------
+              private fun label(x: Item): String {
+                  return when (x.status) {
+                      "queued" -> "Waiting"
+                      "downloading" -> "Downloading " + (if (x.total > 0) (x.done * 100 / x.total).toString() + "% (" + Engine.fmt(x.done) + " of " + Engine.fmt(x.total) + ")" else Engine.fmt(x.done))
+                      "extracting" -> "Extracting... " + Engine.fmt(x.done)
+                      "done" -> "Done" + (if (x.detail.isNotEmpty()) " - " + x.detail else "")
+                      "failed" -> "FAILED - " + x.detail
+                      "canceled" -> "Canceled"
+                      else -> x.status
+                  }
+              }
+
+              private fun showDownloads() {
+                  val list = Engine.items.toList().reversed()
+                  val lines = if (list.isEmpty()) arrayOf("No downloads yet") else list.map { it.name + "\n   " + label(it) }.toTypedArray()
+                  AlertDialog.Builder(this)
+                      .setTitle("Downloads")
+                      .setItems(lines) { _, which -> if (list.isNotEmpty()) itemActions(list[which]) }
+                      .setPositiveButton("Close", null)
+                      .setNeutralButton("Clear finished") { _, _ -> Engine.clearFinished() }
+                      .setNegativeButton("Refresh") { _, _ -> showDownloads() }
+                      .show()
+              }
+
+              private fun itemActions(x: Item) {
+                  val opts = when (x.status) {
+                      "queued", "downloading", "extracting" -> arrayOf("Cancel this download")
+                      "failed", "canceled" -> arrayOf("Retry", "Remove from list")
+                      else -> arrayOf("Remove from list")
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle(x.name)
+                      .setMessage(label(x))
+                      .setItems(opts) { _, w ->
+                          when (opts[w]) {
+                              "Cancel this download" -> Engine.cancel(x)
+                              "Retry" -> Engine.retry(x)
+                              else -> Engine.remove(x)
+                          }
+                      }
+                      .setNegativeButton("Back", null)
+                      .show()
+              }
+
+              // ---------- lock / dim ----------
+              private fun resetBrightness() {
+                  val a = window.attributes
+                  a.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                  window.attributes = a
+              }
+
+              private fun lockScreen(dim: Boolean) {
+                  locked = true
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  if (dim) {
+                      lockLayer.setBackgroundColor(Color.BLACK)
+                      lockLabel.text = ""
+                      unlockBtn.setTextColor(Color.parseColor("#777777"))
+                      unlockBtn.setBackgroundColor(Color.parseColor("#151515"))
+                      val a = window.attributes
+                      a.screenBrightness = 0.01f
+                      window.attributes = a
+                  } else {
+                      lockLayer.setBackgroundColor(Color.parseColor("#66000000"))
+                      lockLabel.text = "🔒 Locked"
+                      unlockBtn.setTextColor(Color.WHITE)
+                      unlockBtn.setBackgroundColor(Color.parseColor("#CC333333"))
+                      resetBrightness()
+                  }
+                  lockLayer.visibility = View.VISIBLE
+              }
+
+              private fun unlockScreen() {
+                  locked = false
+                  lockLayer.visibility = View.GONE
+                  window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  resetBrightness()
+              }
+
+              // ---------- floating window ----------
+              private fun canOverlay(): Boolean = Settings.canDrawOverlays(this)
+
+              private fun toggleFloat() {
+                  if (floating) dock(false) else startFloat()
+              }
+
+              private fun makeShield(lp: WindowManager.LayoutParams, wm: WindowManager, box: View): View {
+                  val shield = View(this)
+                  var downX = 0f
+                  var downY = 0f
+                  var startX = 0
+                  var startY = 0
+                  var dragged = false
+                  shield.setOnTouchListener { _, ev ->
+                      when (ev.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              downX = ev.rawX
+                              downY = ev.rawY
+                              startX = lp.x
+                              startY = lp.y
+                              dragged = false
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = ev.rawX - downX
+                              val dy = ev.rawY - downY
+                              if (!dragged && (Math.abs(dx) > dp(12) || Math.abs(dy) > dp(12))) dragged = true
+                              if (dragged) {
+                                  lp.x = startX + dx.toInt()
+                                  lp.y = startY + dy.toInt()
+                                  try { wm.updateViewLayout(box, lp) } catch (e: Exception) { }
+                              }
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (!dragged) floatTap() else snapToSide(lp, wm, box)
+                          }
+                      }
+                      true
+                  }
+                  return shield
+              }
+
+              private fun floatTap() {
+                  val now = android.os.SystemClock.elapsedRealtime()
+                  if (now - lastFloatTap > 700) floatTaps = 0
+                  lastFloatTap = now
+                  floatTaps++
+                  if (floatTaps >= 3) {
+                      floatTaps = 0
+                      h.post { dock(true) }
+                  }
+              }
+
+              private fun startFloat(moveBack: Boolean = true, prompt: Boolean = true) {
+                  if (floating) return
+                  if (!canOverlay()) {
+                      if (prompt) {
+                          Engine.log("Allow 'Display over other apps' for this app on the screen that just opened, then tap Float again.")
+                          try {
+                              startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
+                          } catch (e: Exception) { }
+                      }
+                      return
+                  }
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val dm = resources.displayMetrics
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val idx = root.indexOfChild(wv)
+                  root.removeView(wv)
+                  val ph = TextView(this)
+                  ph.text = "Browser is floating as a small bubble.\nTriple-tap the bubble, or press Dock, to bring it back."
+                  ph.setTextColor(Color.WHITE)
+                  ph.gravity = Gravity.CENTER
+                  root.addView(ph, if (idx < 0) root.childCount else idx, LinearLayout.LayoutParams(mp, 0, 4f))
+                  placeholder = ph
+
+                  // Bubble is tiny, but the real WebView inside it is kept at a normal working size
+                  // and just visually scaled down to fit.
+                  val bubblePx = dp(52)
+                  val innerPx = dp(360)
+                  val innerH = dp(640)
+                  val scale = bubblePx.toFloat() / innerPx.toFloat()
+
+                  val box = FrameLayout(this)
+                  box.clipChildren = true
+                  box.clipToOutline = true
+                  box.background = android.graphics.drawable.GradientDrawable().apply {
+                      shape = android.graphics.drawable.GradientDrawable.OVAL
+                      setColor(Color.parseColor("#9FE870"))
+                      setStroke(dp(2), Color.parseColor("#1b5e20"))
+                  }
+                  box.addView(wv, FrameLayout.LayoutParams(innerPx, innerH))
+                  wv.pivotX = 0f
+                  wv.pivotY = 0f
+                  wv.scaleX = scale
+                  wv.scaleY = scale
+
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+                  val lp = WindowManager.LayoutParams(
+                      bubblePx, bubblePx,
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.gravity = Gravity.TOP or Gravity.START
+                  val margin = dp(4)
+                  val savedX = Engine.prefs.getInt("bx", dm.widthPixels - bubblePx - margin)
+                  lp.x = if (savedX + bubblePx / 2 < dm.widthPixels / 2) margin else dm.widthPixels - bubblePx - margin
+                  lp.y = Engine.prefs.getInt("by", (dm.heightPixels * 0.30f).toInt()).coerceIn(dp(40), dm.heightPixels - bubblePx - dp(90))
+                  box.addView(makeShield(lp, wm, box), FrameLayout.LayoutParams(mp, mp))
+                  wm.addView(box, lp)
+                  floatBox = box
+                  floating = true
+                  floatBtn?.text = "Dock"
+                  if (prompt) Engine.log("Floating as a small bubble at the side. Drag it to move it; triple-tap it to open the app.")
+                  if (moveBack) h.postDelayed({ moveTaskToBack(true) }, 400)
+              }
+
+              private fun dock(openApp: Boolean) {
+                  if (!floating) return
+                  if (openApp) {
+                      try {
+                          val i = Intent(this, MainActivity::class.java)
+                          i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { }
+                  }
+                  val box = floatBox
+                  val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  try { if (box != null) wm.removeView(box) } catch (e: Exception) { }
+                  try { box?.removeView(wv) } catch (e: Exception) { }
+                  wv.scaleX = 1f
+                  wv.scaleY = 1f
+                  wv.pivotX = (wv.width / 2).toFloat()
+                  wv.pivotY = (wv.height / 2).toFloat()
+                  var idx = root.childCount
+                  val ph = placeholder
+                  if (ph != null) {
+                      idx = root.indexOfChild(ph)
+                      root.removeView(ph)
+                  }
+                  if (idx < 0) idx = root.childCount
+                  if (wv.parent == null) root.addView(wv, idx, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f))
+                  floatBox = null
+                  placeholder = null
+                  floating = false
+                  floatBtn?.text = "Float"
+              }
+
+              private fun snapToSide(lp: WindowManager.LayoutParams, wm: WindowManager, box: View) {
+                  val dm = resources.displayMetrics
+                  val size = lp.width
+                  val margin = dp(4)
+                  lp.x = if (lp.x + size / 2 < dm.widthPixels / 2) margin else dm.widthPixels - size - margin
+                  val minY = dp(40)
+                  val maxY = dm.heightPixels - size - dp(90)
+                  if (lp.y < minY) lp.y = minY
+                  if (lp.y > maxY) lp.y = maxY
+                  try { wm.updateViewLayout(box, lp) } catch (e: Exception) { }
+                  Engine.prefs.edit().putInt("bx", lp.x).putInt("by", lp.y).apply()
+              }
+
+              // ---------- auto-revive / background ----------
+              private fun handleAuto(i: Intent?) {
+                  if (i == null || !i.getBooleanExtra("auto", false)) return
+                  autoBoot = true
+                  try { root.visibility = View.INVISIBLE } catch (e: Exception) { }
+                  Engine.ensureWorker()
+                  h.postDelayed({ finishAuto() }, 1200)
+              }
+
+              private fun finishAuto() {
+                  if (!autoBoot) return
+                  autoBoot = false
+                  if (Engine.hasWork() && canOverlay()) startFloat(true, false) else moveTaskToBack(true)
+              }
+
+              private fun setupWatchdog() {
+                  val on = watchdogOn()
+                  val msg = if (on) {
+                      "The watchdog is ON.\n\nEvery time you open an app it checks the downloader. If it was killed it comes back by itself, continues the downloads and shows the side bubble again."
+                  } else {
+                      "The watchdog is OFF.\n\n1) Tap 'Open settings'.\n2) Find 'Folder Downloader' and turn it ON. If the switch is greyed out, tap it once, then go to Settings > Apps > Folder Downloader > three dots (top right) > 'Allow restricted settings', and try again.\n\nIt only notices which app opens. It does not read your screen."
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("Auto-revive watchdog")
+                      .setMessage(msg)
+                      .setPositiveButton("Open settings") { _, _ ->
+                          try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) { }
+                      }
+                      .setNegativeButton("Close", null)
+                      .show()
+              }
+
+              private fun batterySetting() {
+                  try {
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      if (pm.isIgnoringBatteryOptimizations(packageName)) {
+                          Engine.log("Battery: already unrestricted for this app.")
+                      } else {
+                          val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                          i.data = Uri.parse("package:" + packageName)
+                          startActivity(i)
+                          Engine.log("Allow 'unrestricted battery use' on the screen that just opened.")
+                      }
+                  } catch (e: Exception) { }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/Engine.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.StatFs
+          import android.os.SystemClock
+          import android.provider.DocumentsContract
+          import android.webkit.CookieManager
+          import android.webkit.MimeTypeMap
+          import android.webkit.URLUtil
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.BufferedInputStream
+          import java.io.InputStream
+          import java.io.OutputStream
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.concurrent.CopyOnWriteArrayList
+          import java.util.zip.ZipInputStream
+
+          class CancelException : Exception("Canceled")
+          class SpaceException(m: String) : Exception(m)
+
+          class Item(
+              val id: String,
+              val url: String,
+              var name: String,
+              var mime: String,
+              val ua: String,
+              val cookie: String,
+              val referer: String
+          ) {
+              // queued, downloading, extracting, done, failed, canceled
+              @Volatile var status = "queued"
+              @Volatile var detail = ""
+              @Volatile var done = 0L
+              @Volatile var total = -1L
+              @Volatile var cancel = false
+              @Volatile var partUri = ""
+          }
+
+          object Engine {
+              const val RESERVE = 1024L * 1024L * 1024L      // downloads stop when free space reaches 1 GB
+              const val WARN = 2048L * 1024L * 1024L         // warning shown below 2 GB
+              const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
+              lateinit var app: Context
+              lateinit var prefs: SharedPreferences
+              private var inited = false
+
+              val items = CopyOnWriteArrayList<Item>()
+              @Volatile var blockReason: String? = null
+              @Volatile var appVisible = false
+              @Volatile var workerRunning = false
+              @Volatile var lastWarning: String? = null
+              @Volatile var currentItem: Item? = null
+              private var lowWarned = false
+
+              private val logBuf = StringBuilder()
+              @Volatile var logVersion = 0
+
+              fun log(m: String) {
+                  synchronized(logBuf) {
+                      logBuf.append(m).append('\n')
+                      if (logBuf.length > 30000) logBuf.delete(0, logBuf.length - 20000)
+                      logVersion++
+                  }
+                  changed(true)
+              }
+
+              fun logSnapshot(): String = synchronized(logBuf) { logBuf.toString() }
+
+              fun clearLog() {
+                  synchronized(logBuf) {
+                      logBuf.setLength(0)
+                      logVersion++
+                  }
+                  changed(true)
+              }
+
+              private val main = Handler(Looper.getMainLooper())
+              private val listeners = CopyOnWriteArrayList<() -> Unit>()
+              private var lastNotify = 0L
+
+              @Synchronized
+              fun init(ctx: Context) {
+                  if (inited) return
+                  app = ctx.applicationContext
+                  prefs = app.getSharedPreferences("fdl", Context.MODE_PRIVATE)
+                  inited = true
+                  load()
+              }
+
+              // ---------- listeners ----------
+              fun addListener(l: () -> Unit) { if (!listeners.contains(l)) listeners.add(l) }
+              fun removeListener(l: () -> Unit) { listeners.remove(l) }
+
+              fun changed(force: Boolean = false) {
+                  val now = SystemClock.elapsedRealtime()
+                  if (!force && now - lastNotify < 400) return
+                  lastNotify = now
+                  main.post {
+                      for (l in listeners) {
+                          try { l() } catch (e: Exception) { }
+                      }
+                  }
+              }
+
+              fun warn(msg: String) {
+                  log("⚠ " + msg)
+                  lastWarning = msg
+                  try { Notifier.warn(app, msg) } catch (e: Exception) { }
+                  changed(true)
+              }
+
+              // ---------- folder + space ----------
+              fun tree(): Uri? {
+                  val s = prefs.getString("tree", null) ?: return null
+                  return try { Uri.parse(s) } catch (e: Exception) { null }
+              }
+
+              fun setTree(u: Uri) {
+                  prefs.edit().putString("tree", u.toString()).apply()
+                  lowWarned = false
+                  log("Download folder: " + treeName())
+                  changed(true)
+                  ensureWorker()
+              }
+
+              fun treeName(): String {
+                  val t = tree() ?: return "(none)"
+                  return try {
+                      val doc = DocumentsContract.buildDocumentUriUsingTree(t, DocumentsContract.getTreeDocumentId(t))
+                      val name: String? = app.contentResolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                          if (c.moveToFirst()) c.getString(0) else null
+                      }
+                      name ?: "(folder)"
+                  } catch (e: Exception) { "(folder)" }
+              }
+
+              fun freeBytes(): Long {
+                  try {
+                      val t = tree()
+                      val vol = if (t != null) DocumentsContract.getTreeDocumentId(t).substringBefore(':') else "primary"
+                      if (vol != "primary") {
+                          for (f in app.getExternalFilesDirs(null)) {
+                              if (f != null && f.absolutePath.contains("/" + vol + "/")) {
+                                  return StatFs(f.absolutePath).availableBytes
+                              }
+                          }
+                      }
+                      return StatFs(Environment.getExternalStorageDirectory().absolutePath).availableBytes
+                  } catch (e: Exception) {
+                      return try { StatFs(app.filesDir.absolutePath).availableBytes } catch (e2: Exception) { 0L }
+                  }
+              }
+
+              fun fmt(b: Long): String {
+                  if (b < 0L) return "?"
+                  val mb = b / 1048576.0
+                  return if (mb >= 1024.0) String.format(java.util.Locale.US, "%.2f GB", mb / 1024.0)
+                  else String.format(java.util.Locale.US, "%.1f MB", mb)
+              }
+
+              // ---------- queue ----------
+              fun hasWork(): Boolean = items.any { it.status == "queued" || it.status == "downloading" || it.status == "extracting" }
+
+              fun activeCount(): Int = items.count { it.status == "queued" || it.status == "downloading" || it.status == "extracting" }
+
+              fun enqueue(url: String, name: String, mime: String, ua: String, referer: String) {
+                  if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+                      warn("This kind of link (" + url.substringBefore(':') + ":) is created inside the page and can't be downloaded by this app. Look for a normal download link on the site.")
+                      return
+                  }
+                  if (items.any { it.url == url && (it.status == "queued" || it.status == "downloading" || it.status == "extracting") }) return
+                  val cookie = cookieFor(url, "")
+                  val item = Item(System.currentTimeMillis().toString() + "_" + items.size, url, name, mime, ua, cookie, referer)
+                  items.add(item)
+                  log("⬇ added: " + name)
+                  trim()
+                  save()
+                  changed(true)
+                  ensureWorker()
+              }
+
+              fun cancel(item: Item) {
+                  item.cancel = true
+                  if (item.status == "queued") {
+                      item.status = "canceled"
+                      item.detail = "Canceled"
+                  }
+                  save()
+                  changed(true)
+              }
+
+              fun retry(item: Item) {
+                  if (item.status == "failed" || item.status == "canceled") {
+                      item.status = "queued"
+                      item.detail = ""
+                      item.cancel = false
+                      item.done = 0L
+                      save()
+                      changed(true)
+                      ensureWorker()
+                  }
+              }
+
+              fun remove(item: Item) {
+                  if (item.status == "queued" || item.status == "downloading" || item.status == "extracting") return
+                  items.remove(item)
+                  save()
+                  changed(true)
+              }
+
+              fun clearFinished() {
+                  items.removeAll { it.status == "done" || it.status == "failed" || it.status == "canceled" }
+                  save()
+                  changed(true)
+              }
+
+              private fun trim() {
+                  while (items.size > 200) {
+                      val old = items.firstOrNull { it.status == "done" || it.status == "failed" || it.status == "canceled" } ?: break
+                      items.remove(old)
+                  }
+              }
+
+              fun summary(): String {
+                  val left = activeCount()
+                  val c = currentItem
+                  val head = if (c != null && c.status == "extracting") {
+                      "Extracting " + c.name
+                  } else if (c != null) {
+                      "Downloading " + (if (c.total > 0) (c.done * 100 / c.total).toString() + "%" else fmt(c.done))
+                  } else if (blockReason != null) {
+                      "Paused"
+                  } else {
+                      "Idle"
+                  }
+                  return head + " • " + left + " left • " + fmt(freeBytes()) + " free"
+              }
+
+              // ---------- persistence ----------
+              fun save() {
+                  try {
+                      val a = JSONArray()
+                      for (x in items) {
+                          a.put(
+                              JSONObject().put("id", x.id).put("url", x.url).put("name", x.name).put("mime", x.mime)
+                                  .put("ua", x.ua).put("cookie", x.cookie).put("referer", x.referer)
+                                  .put("status", x.status).put("detail", x.detail).put("part", x.partUri)
+                          )
+                      }
+                      prefs.edit().putString("items", a.toString()).apply()
+                  } catch (e: Exception) { }
+              }
+
+              private fun load() {
+                  try {
+                      val a = JSONArray(prefs.getString("items", "[]"))
+                      for (i in 0 until a.length()) {
+                          val o = a.getJSONObject(i)
+                          val x = Item(o.getString("id"), o.getString("url"), o.optString("name"), o.optString("mime"),
+                              o.optString("ua"), o.optString("cookie"), o.optString("referer"))
+                          x.status = o.optString("status", "queued")
+                          x.detail = o.optString("detail")
+                          x.partUri = o.optString("part")
+                          if (x.status == "downloading") {
+                              if (x.partUri.isNotEmpty()) deleteQuiet(Uri.parse(x.partUri))
+                              x.partUri = ""
+                              x.status = "queued"
+                              x.detail = "Restarted after interruption"
+                          } else if (x.status == "extracting") {
+                              x.status = "failed"
+                              x.detail = "Interrupted while extracting. The ZIP was kept in your folder."
+                          }
+                          items.add(x)
+                      }
+                  } catch (e: Exception) { }
+              }
+
+              // ---------- worker ----------
+              fun ensureRunning(ctx: Context) {
+                  init(ctx)
+                  if (hasWork()) {
+                      ensureWorker()
+                      startService()
+                  }
+              }
+
+              fun startService() {
+                  try {
+                      val i = Intent(app, DownloadService::class.java)
+                      if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i) else app.startService(i)
+                  } catch (e: Exception) { }
+              }
+
+              @Synchronized
+              fun ensureWorker() {
+                  if (workerRunning) return
+                  if (items.none { it.status == "queued" }) return
+                  workerRunning = true
+                  startService()
+                  Thread {
+                      try {
+                          loop()
+                      } catch (e: Throwable) {
+                      } finally {
+                          workerRunning = false
+                          currentItem = null
+                          blockReason = null
+                          changed(true)
+                          if (items.any { it.status == "queued" }) ensureWorker()
+                      }
+                  }.start()
+              }
+
+              private fun sleepMs(ms: Long) {
+                  try { Thread.sleep(ms) } catch (e: InterruptedException) { }
+              }
+
+              private fun loop() {
+                  while (true) {
+                      val item = items.firstOrNull { it.status == "queued" } ?: return
+                      // wait until a folder is chosen and there is enough free space
+                      while (item.status == "queued") {
+                          if (tree() == null) {
+                              blockReason = "Choose a download folder first (Folder button)."
+                              changed()
+                              sleepMs(2000)
+                              continue
+                          }
+                          val free = freeBytes()
+                          if (free <= RESERVE) {
+                              blockReason = "STOPPED: only " + fmt(free) + " free. Downloads are paused until more than 1 GB is free."
+                              if (!lowWarned) {
+                                  lowWarned = true
+                                  warn("Storage is almost full: only " + fmt(free) + " is left. Downloads are stopped to keep 1 GB free. Free up space (or choose another folder) and they will continue automatically.")
+                              }
+                              changed()
+                              sleepMs(3000)
+                              continue
+                          }
+                          lowWarned = false
+                          blockReason = null
+                          break
+                      }
+                      if (item.status != "queued") continue
+                      runItem(item)
+                  }
+              }
+
+              private fun runItem(item: Item) {
+                  currentItem = item
+                  item.status = "downloading"
+                  item.detail = ""
+                  item.done = 0L
+                  item.total = -1L
+                  item.cancel = false
+                  save()
+                  changed(true)
+
+                  log("▶ " + item.name)
+                  val saved = download(item)
+                  if (saved != null) {
+                      val lower = item.name.lowercase()
+                      if (lower.endsWith(".zip") || item.mime.contains("zip")) {
+                          try {
+                              val n = extractZip(item, saved)
+                              if (n > 0) {
+                                  val deleted = deleteQuiet(saved)
+                                  item.status = "done"
+                                  item.detail = "Extracted " + n + " file(s) into a folder; " + (if (deleted) "ZIP deleted to save space." else "could not delete the ZIP.")
+                              } else {
+                                  item.status = "done"
+                                  item.detail = "The ZIP had no files inside; it was kept."
+                              }
+                          } catch (e: CancelException) {
+                              item.status = "canceled"
+                              item.detail = "Canceled while extracting. The ZIP was kept."
+                          } catch (e: SpaceException) {
+                              item.status = "failed"
+                              item.detail = (e.message ?: "Not enough space") + " The ZIP was kept."
+                              warn(item.detail)
+                          } catch (e: Throwable) {
+                              item.status = "failed"
+                              item.detail = "Extraction failed: " + (e.message ?: e.toString()) + ". The ZIP was kept."
+                          }
+                      } else if (lower.endsWith(".rar") || lower.endsWith(".7z")) {
+                          item.status = "done"
+                          item.detail = "Saved. RAR / 7Z files can't be extracted by this app."
+                      } else {
+                          item.status = "done"
+                      }
+                  }
+                  when (item.status) {
+                      "done" -> {
+                          log("  ✔ done: " + item.name + (if (item.detail.isNotEmpty()) " — " + item.detail else ""))
+                          prefs.edit().putInt("revive_n", 0).apply()
+                      }
+                      "failed" -> log("  ✖ failed: " + item.name + " — " + item.detail)
+                      "canceled" -> log("  ■ canceled: " + item.name)
+                  }
+                  currentItem = null
+                  save()
+                  changed(true)
+              }
+
+              // ---------- download ----------
+              private fun download(item: Item): Uri? {
+                  var part: Uri? = null
+                  var conn: HttpURLConnection? = null
+                  try {
+                      val t = tree() ?: throw Exception("No download folder selected")
+                      val parent = DocumentsContract.buildDocumentUriUsingTree(t, DocumentsContract.getTreeDocumentId(t))
+                      val c = open(item)
+                      conn = c
+                      val code = c.responseCode
+                      if (code !in 200..299) throw Exception("Server answered HTTP " + code)
+                      val len = c.contentLengthLong
+                      item.total = len
+                      val ctype = (c.contentType ?: "").substringBefore(';').trim().lowercase()
+                      val cd = c.getHeaderField("Content-Disposition")
+                      var name = if (cd != null) URLUtil.guessFileName(item.url, cd, ctype) else item.name
+                      name = safe(name)
+                      if (!name.contains('.')) {
+                          val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(ctype) ?: ""
+                          if (ext.isNotEmpty()) name = name + "." + ext
+                      }
+                      val ln = name.lowercase()
+                      if (ctype.startsWith("text/html") && !ln.endsWith(".html") && !ln.endsWith(".htm")) {
+                          throw Exception("The link returned a web page, not a file. Sign in on the site first, or use the file's own download link.")
+                      }
+                      item.name = name
+                      item.mime = ctype
+                      log("  " + name + (if (len > 0) " (" + fmt(len) + ")" else "") + " — saving to your folder")
+                      if (len > 0) {
+                          val free = freeBytes()
+                          if (free - len < RESERVE) {
+                              throw SpaceException("Not enough space: this file needs " + fmt(len) + " but only " + fmt(maxOf(0L, free - RESERVE)) + " is usable (1 GB is always kept free).")
+                          }
+                      }
+                      val resolver = app.contentResolver
+                      val p = DocumentsContract.createDocument(resolver, parent, "application/octet-stream", name + ".part")
+                          ?: throw Exception("Could not create a file in the chosen folder. Choose the folder again.")
+                      part = p
+                      item.partUri = p.toString()
+                      save()
+                      val out = resolver.openOutputStream(p, "w") ?: throw Exception("Could not open the file for writing")
+                      c.inputStream.use { ins ->
+                          out.use { o -> copyChecked(item, ins, o) }
+                      }
+                      if (len > 0 && item.done != len) {
+                          throw Exception("Connection ended early (got " + fmt(item.done) + " of " + fmt(len) + ")")
+                      }
+                      val renamed = DocumentsContract.renameDocument(resolver, p, name)
+                      item.partUri = ""
+                      if (renamed == null) {
+                          item.detail = "Saved as " + name + ".part (could not rename)"
+                          part = null
+                          return p
+                      }
+                      part = null
+                      return renamed
+                  } catch (e: CancelException) {
+                      item.status = "canceled"
+                      item.detail = "Canceled"
+                      deleteQuiet(part)
+                  } catch (e: SpaceException) {
+                      item.status = "failed"
+                      item.detail = e.message ?: "Not enough space"
+                      deleteQuiet(part)
+                      warn(item.detail)
+                  } catch (e: Throwable) {
+                      item.status = "failed"
+                      item.detail = e.message ?: e.toString()
+                      deleteQuiet(part)
+                  } finally {
+                      try { conn?.disconnect() } catch (e: Exception) { }
+                      item.partUri = ""
+                  }
+                  return null
+              }
+
+              private fun copyChecked(item: Item, ins: InputStream, out: OutputStream) {
+                  val buf = ByteArray(128 * 1024)
+                  var last = SystemClock.elapsedRealtime()
+                  var lastLog = last
+                  while (true) {
+                      if (item.cancel) throw CancelException()
+                      val n = ins.read(buf)
+                      if (n < 0) break
+                      out.write(buf, 0, n)
+                      item.done += n
+                      val now = SystemClock.elapsedRealtime()
+                      if (now - last > 1500) {
+                          last = now
+                          val free = freeBytes()
+                          if (free <= RESERVE) {
+                              throw SpaceException("Stopped: free space reached the 1 GB reserve (" + fmt(free) + " left). The unfinished file was removed.")
+                          }
+                          if (now - lastLog > 20000) {
+                              lastLog = now
+                              if (item.status == "extracting") log("  extracted so far: " + fmt(item.done) + " • " + fmt(free) + " free")
+                              else log("  downloading " + (if (item.total > 0) (item.done * 100 / item.total).toString() + "%" else fmt(item.done)) + " • " + fmt(free) + " free")
+                          }
+                          changed()
+                      }
+                  }
+              }
+
+              private fun open(item: Item): HttpURLConnection {
+                  var u = item.url
+                  var hops = 0
+                  while (true) {
+                      val c = URL(u).openConnection() as HttpURLConnection
+                      c.instanceFollowRedirects = false
+                      c.connectTimeout = 20000
+                      c.readTimeout = 30000
+                      c.setRequestProperty("User-Agent", if (item.ua.isBlank()) DEFAULT_UA else item.ua)
+                      if (item.referer.isNotBlank()) c.setRequestProperty("Referer", item.referer)
+                      val ck = cookieFor(u, item.cookie)
+                      if (ck.isNotBlank()) c.setRequestProperty("Cookie", ck)
+                      c.setRequestProperty("Accept-Encoding", "identity")
+                      val code = c.responseCode
+                      if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                          val loc = c.getHeaderField("Location") ?: return c
+                          c.disconnect()
+                          u = URL(URL(u), loc).toString()
+                          hops++
+                          if (hops > 8) throw Exception("Too many redirects")
+                          continue
+                      }
+                      return c
+                  }
+              }
+
+              private fun cookieFor(url: String, fallback: String): String {
+                  return try { CookieManager.getInstance().getCookie(url) ?: fallback } catch (e: Throwable) { fallback }
+              }
+
+              // ---------- ZIP extraction ----------
+              private fun extractZip(item: Item, zipUri: Uri): Int {
+                  item.status = "extracting"
+                  item.detail = "Extracting..."
+                  log("  extracting ZIP, then it will be deleted to save space...")
+                  item.done = 0L
+                  item.total = -1L
+                  save()
+                  changed(true)
+                  val resolver = app.contentResolver
+                  val t = tree() ?: throw Exception("No download folder selected")
+                  val root = DocumentsContract.buildDocumentUriUsingTree(t, DocumentsContract.getTreeDocumentId(t))
+                  val base = item.name.substringBeforeLast('.', item.name)
+                  val folder = DocumentsContract.createDocument(resolver, root, DocumentsContract.Document.MIME_TYPE_DIR, safe(base))
+                      ?: throw Exception("Could not create the extraction folder")
+                  val dirs = HashMap<String, Uri>()
+                  var count = 0
+                  var ok = false
+                  try {
+                      val raw = resolver.openInputStream(zipUri) ?: throw Exception("Could not read the ZIP")
+                      ZipInputStream(BufferedInputStream(raw, 1 shl 16)).use { zis ->
+                          var e = zis.nextEntry
+                          while (e != null) {
+                              if (item.cancel) throw CancelException()
+                              val rawName = e.name.replace('\\', '/')
+                              val parts = rawName.split('/').filter { it.isNotEmpty() && it != "." && it != ".." }
+                              if (parts.isNotEmpty() && !rawName.startsWith("__MACOSX/") && !parts.last().startsWith("._")) {
+                                  val dirParts = if (e.isDirectory) parts else parts.dropLast(1)
+                                  var dirUri = folder
+                                  var key = ""
+                                  for (p in dirParts) {
+                                      key = if (key.isEmpty()) p else key + "/" + p
+                                      val parentUri = dirUri
+                                      dirUri = dirs.getOrPut(key) {
+                                          DocumentsContract.createDocument(resolver, parentUri, DocumentsContract.Document.MIME_TYPE_DIR, safe(p))
+                                              ?: throw Exception("Could not create folder " + p)
+                                      }
+                                  }
+                                  if (!e.isDirectory) {
+                                      val sz = e.size
+                                      if (sz > 0 && freeBytes() - sz < RESERVE) {
+                                          throw SpaceException("Not enough space to extract. Free space would drop below the 1 GB reserve.")
+                                      }
+                                      val fname = safe(parts.last())
+                                      val ext = fname.substringAfterLast('.', "").lowercase()
+                                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+                                      val doc = DocumentsContract.createDocument(resolver, dirUri, mime, fname)
+                                          ?: throw Exception("Could not create " + fname)
+                                      val o = resolver.openOutputStream(doc, "w") ?: throw Exception("Could not write " + fname)
+                                      o.use { copyChecked(item, zis, it) }
+                                      count++
+                                      changed()
+                                  }
+                              }
+                              e = zis.nextEntry
+                          }
+                      }
+                      ok = count > 0
+                  } finally {
+                      if (!ok) deleteQuiet(folder)
+                  }
+                  return count
+              }
+
+              // ---------- helpers ----------
+              private fun safe(s: String): String {
+                  val c = s.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().trim('.')
+                  return (if (c.isEmpty()) "file" else c).take(150)
+              }
+
+              private fun deleteQuiet(u: Uri?): Boolean {
+                  if (u == null) return false
+                  return try { DocumentsContract.deleteDocument(app.contentResolver, u) } catch (e: Exception) { false }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/Notifier.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Build
+
+          object Notifier {
+              const val CH_RUN = "fdl_run"
+              const val CH_WARN = "fdl_warn"
+              const val ID_RUN = 1
+              const val ID_WARN = 2
+
+              private fun channels(ctx: Context) {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val nm = ctx.getSystemService(NotificationManager::class.java)
+                      nm.createNotificationChannel(NotificationChannel(CH_RUN, "Downloads", NotificationManager.IMPORTANCE_LOW))
+                      nm.createNotificationChannel(NotificationChannel(CH_WARN, "Warnings", NotificationManager.IMPORTANCE_HIGH))
+                  }
+              }
+
+              private fun builder(ctx: Context, ch: String): Notification.Builder =
+                  if (Build.VERSION.SDK_INT >= 26) Notification.Builder(ctx, ch) else Notification.Builder(ctx)
+
+              private fun openIntent(ctx: Context): PendingIntent {
+                  val i = Intent(ctx, MainActivity::class.java)
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                  return PendingIntent.getActivity(ctx, 10, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+              }
+
+              fun running(ctx: Context, text: String): Notification {
+                  channels(ctx)
+                  return builder(ctx, CH_RUN)
+                      .setContentTitle("Folder Downloader")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.stat_sys_download)
+                      .setOngoing(true)
+                      .setOnlyAlertOnce(true)
+                      .setContentIntent(openIntent(ctx))
+                      .build()
+              }
+
+              fun update(ctx: Context, text: String) {
+                  try {
+                      ctx.getSystemService(NotificationManager::class.java).notify(ID_RUN, running(ctx, text))
+                  } catch (e: Exception) { }
+              }
+
+              fun warn(ctx: Context, text: String) {
+                  try {
+                      channels(ctx)
+                      val n = builder(ctx, CH_WARN)
+                          .setContentTitle("Folder Downloader")
+                          .setContentText(text)
+                          .setStyle(Notification.BigTextStyle().bigText(text))
+                          .setSmallIcon(android.R.drawable.stat_sys_warning)
+                          .setAutoCancel(true)
+                          .setContentIntent(openIntent(ctx))
+                          .build()
+                      ctx.getSystemService(NotificationManager::class.java).notify(ID_WARN, n)
+                  } catch (e: Exception) { }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/DownloadService.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.net.wifi.WifiManager
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+
+          // Keeps the app alive in the background (notification + wake locks) while downloads are waiting.
+          class DownloadService : Service() {
+              private var wake: PowerManager.WakeLock? = null
+              private var wifi: WifiManager.WifiLock? = null
+              private val listener: () -> Unit = { refresh() }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  Engine.init(this)
+                  startFg()
+                  try {
+                      val pm = getSystemService(POWER_SERVICE) as PowerManager
+                      wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fdl:svc")
+                      wake?.acquire(12 * 60 * 60 * 1000L)
+                  } catch (e: Exception) { }
+                  try {
+                      val w = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                      val l = w.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "fdl:wifi")
+                      l.setReferenceCounted(false)
+                      l.acquire()
+                      wifi = l
+                  } catch (e: Exception) { }
+                  Engine.addListener(listener)
+              }
+
+              private fun startFg() {
+                  val n = Notifier.running(this, Engine.summary())
+                  try {
+                      if (Build.VERSION.SDK_INT >= 29) {
+                          startForeground(Notifier.ID_RUN, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                      } else {
+                          startForeground(Notifier.ID_RUN, n)
+                      }
+                  } catch (e: Exception) { }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  Engine.init(this)
+                  startFg()
+                  // intent == null means Android restarted this service after killing the app
+                  if (intent == null) {
+                      try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+                  }
+                  Engine.ensureWorker()
+                  refresh()
+                  return START_STICKY
+              }
+
+              private fun refresh() {
+                  if (!Engine.hasWork() && !Engine.workerRunning) {
+                      try { stopForeground(true) } catch (e: Exception) { }
+                      stopSelf()
+                      return
+                  }
+                  Notifier.update(this, Engine.summary())
+              }
+
+              override fun onDestroy() {
+                  Engine.removeListener(listener)
+                  try { if (wake?.isHeld == true) wake?.release() } catch (e: Exception) { }
+                  try { if (wifi?.isHeld == true) wifi?.release() } catch (e: Exception) { }
+                  super.onDestroy()
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/WatchdogService.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.accessibilityservice.AccessibilityService
+          import android.os.SystemClock
+          import android.view.accessibility.AccessibilityEvent
+
+          // Like an app locker: every time any app opens, check that the downloader is alive.
+          // It only listens for "a window changed" - it does not read anything on the screen.
+          class WatchdogService : AccessibilityService() {
+              private var last = 0L
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - last < 2500) return
+                  last = now
+                  try { Revive.ensure(applicationContext) } catch (e: Exception) { }
+              }
+
+              override fun onInterrupt() { }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/BootReceiver.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(ctx: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+                      Engine.init(ctx)
+                      if (Engine.hasWork()) {
+                          Notifier.warn(ctx, "The phone restarted while downloads were waiting. Tap to continue.")
+                      }
+                  }
+              }
+          }
+          RBU_EOF
+          cat > app/src/main/java/com/rbu/folderdl/Revive.kt <<'RBU_EOF'
+          package com.rbu.folderdl
+
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.SystemClock
+
+          // Brings the downloader back if it was killed while downloads were still waiting.
+          object Revive {
+              @Volatile private var lastTry = 0L
+
+              fun ensure(ctx: Context) {
+                  Engine.init(ctx)
+                  if (!Engine.hasWork()) return
+                  // the download engine itself keeps going even without the screen
+                  Engine.ensureWorker()
+                  Engine.startService()
+                  // the app screen exists (it is starting up or running) - nothing to bring back
+                  if (MainActivity.instance != null) return
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastTry < 30000) return
+                  lastTry = now
+                  val p = Engine.prefs
+                  val n = p.getInt("revive_n", 0)
+                  if (n >= 5) {
+                      Notifier.warn(ctx, "It could not restart by itself. Tap to continue.")
+                      return
+                  }
+                  p.edit().putInt("revive_n", n + 1).apply()
+                  try {
+                      val i = Intent(ctx, MainActivity::class.java)
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                      i.putExtra("auto", true)
+                      ctx.startActivity(i)
+                  } catch (e: Exception) { }
+                  // If Android refused to start it from the background, leave a tap-to-continue notification.
+                  Handler(Looper.getMainLooper()).postDelayed({
+                      if (Engine.hasWork() && MainActivity.instance == null) {
+                          Notifier.warn(ctx, "The downloader was closed. Tap to continue.")
+                      }
+                  }, 8000)
+              }
+          }
+          RBU_EOF
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderDownloader-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: folder-downloader-latest
+          name: Folder Downloader APK
+          files: app/build/outputs/apk/debug/app-debug.apk
